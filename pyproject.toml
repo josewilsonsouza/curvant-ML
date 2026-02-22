@@ -1,0 +1,30 @@
+[project]
+name = "curvant-ml"
+version = "0.1.0"
+description = "ML framework for predicting risky driving behavior on road curves using vehicular sensor data"
+requires-python = ">=3.10"
+
+dependencies = [
+    "huggingface-hub",
+    "scipy",
+    "matplotlib",
+    "plotly",
+    "seaborn",
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "imbalanced-learn",
+    "tensorflow",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+dev = ["jupyter", "ipykernel", "nbformat"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

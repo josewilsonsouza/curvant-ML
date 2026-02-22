@@ -1,0 +1,68 @@
+huggingface:
+  dataset_id: jwsouza13/routes_ML_inmetro
+  # token: defina via variável de ambiente HF_TOKEN ou passe explicitamente em hf_login()
+
+data:
+  folders:
+    - ELETRONUCLEAR
+    - RJ-DF
+  # trajetos excluídos por problemas de qualidade (GPS incoerente)
+  excluded_routes:
+    - obd-17-van-circuito-t1
+    - obd-17-van-cicuito-t2
+
+curve_detection:
+  sigma: 2          # suavização gaussiana
+  limiar: 30        # percentil de corte para curvatura
+  limite_raio: 50   # metros — usado apenas em visualizações
+
+driving_analysis:
+  janela_tempo: 10            # segundos por janela de classificação
+  var_velocidade_max: 15      # km/h — limite para aceleração/frenagem anormal
+  velocidade_max_direcao: 30  # km/h — velocidade mínima para direção perigosa
+  angulo_max_direcao: 0.7     # rad  — variação angular máxima (Li et al., 2016)
+  zigue_zague:
+    limiar_bearing: 15        # graus — mudança mínima de bearing
+    limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
+    min_mudancas: 3           # nº de eventos para detectar zigue-zague
+
+features:
+  janela_tempo: 10    # segundos antes do início da curva
+  vars_sensor:
+    - vehicle_speed
+    - engine_rpm
+    - accel_x
+    - accel_y
+
+ml:
+  random_state: 42
+  test_size: 0.3
+  cv_folds: 5
+  use_smote: true
+
+neural_networks:
+  mlp_sklearn:
+    hidden_layer_sizes: [128, 64]
+    activation: relu
+    solver: adam
+    alpha: 0.0001
+    max_iter: 2000
+  mlp_keras:
+    hidden_layers: [64, 64, 64]
+    dropout: 0.3
+    epochs: 20
+    batch_size: 32
+    validation_split: 0.2
+  gru:
+    units: [3, 2]
+    janela_tempo: 1
+    epochs: 10
+    batch_size: 50
+    validation_split: 0.2
+  lstm:
+    units: [64, 32]
+    dropout: 0.3
+    janela_tempo: 1
+    epochs: 20
+    batch_size: 32
+    validation_split: 0.2
