@@ -1,6 +1,6 @@
 [project]
 name = "curvant-ml"
-version = "0.1.0"
+version = "0.0.0.a1"
 description = "ML framework for predicting risky driving behavior on road curves using vehicular sensor data"
 requires-python = ">=3.10"
 
@@ -16,6 +16,7 @@ dependencies = [
     "imbalanced-learn",
     "tensorflow",
     "pyyaml",
+    "pyarrow"
 ]
 
 [project.optional-dependencies]
