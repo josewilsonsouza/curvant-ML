@@ -41,7 +41,9 @@ def detectar_curvas(
     ddx = np.gradient(dxdt, t_fino)
     ddy = np.gradient(dydt, t_fino)
 
-    curvatura = np.abs(dxdt * ddy - dydt * ddx) / np.power(dxdt**2 + dydt**2, 3 / 2)
+    denom = np.power(dxdt**2 + dydt**2, 3 / 2)
+    with np.errstate(invalid='ignore', divide='ignore'):
+        curvatura = np.where(denom > 0, np.abs(dxdt * ddy - dydt * ddx) / denom, 0.0)
     curvatura_suave = gaussian_filter1d(curvatura, sigma=sigma)
     sinal_curvatura = np.sign(gaussian_filter1d(dxdt * ddy - dydt * ddx, sigma=2))
 
@@ -55,7 +57,6 @@ def detectar_curvas(
         np.sqrt(np.diff(x_interp) ** 2 + np.diff(y_interp) ** 2)
     )
 
-    n_cols = ['raio_curvatura', 'curvatura', 'curva', 'sinal_curvatura', 'distancia_acumulada']
     df_unicos = df_unicos.assign(
         raio_curvatura=raio_curvatura,
         curvatura=curvatura_suave,
@@ -64,11 +65,7 @@ def detectar_curvas(
         distancia_acumulada=distancia_acumulada,
     )
 
-    df_final = pd.merge(df, df_unicos[['lat', 'lon'] + n_cols], on=['lat', 'lon'], how='inner')
-    pd.set_option('future.no_silent_downcasting', True)
-    df_final[n_cols] = df_final[n_cols].ffill()
-
-    return df_final, df_unicos
+    return df_unicos
 
 
 def detectar_curvas_todos(
