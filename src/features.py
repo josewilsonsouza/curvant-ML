@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
@@ -24,9 +25,15 @@ def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
 
 def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame:
     """
-    Extrai features estatísticas da janela de tempo imediatamente anterior a cada trecho de curva.
+    Extrai features da janela de tempo imediatamente anterior a cada trecho de curva.
 
-    Target: 'manobra' (1 = Perigosa, 0 = Segura) — definido como ≥2 pontos perigosos na curva.
+    Target: 'manobra' (1 = Perigosa, 0 = Segura) — maioria dos pontos da curva é Perigosa.
+
+    Features extraídas
+    ------------------
+    - Estatísticas clássicas (mean/std/median/max/min) para cada variável sensor
+    - Tendência (slope via regressão linear, cv = std/mean) de cada variável sensor
+    - Contexto do trajeto: posição ordinal e histórico de curvas perigosas anteriores
 
     Parâmetros
     ----------
@@ -63,12 +70,21 @@ def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame
             'id_trecho_curvo': trecho_curvo,
         }
 
+        # Tempo normalizado para a regressão linear (começa em 0)
+        t = janela['time_sec'].values - janela['time_sec'].values[0]
+
         for var in vars_sensor:
-            row[f'{var}_mean'] = janela[var].mean()
-            row[f'{var}_std'] = janela[var].std()
-            row[f'{var}_median'] = janela[var].median()
-            row[f'{var}_max'] = janela[var].max()
-            row[f'{var}_min'] = janela[var].min()
+            vals = janela[var].values
+            row[f'{var}_mean']   = float(np.mean(vals))
+            row[f'{var}_std']    = float(np.std(vals, ddof=1)) if len(vals) > 1 else 0.0
+            row[f'{var}_median'] = float(np.median(vals))
+            row[f'{var}_max']    = float(np.max(vals))
+            row[f'{var}_min']    = float(np.min(vals))
+            # Tendência: coeficiente angular da regressão linear sobre o tempo
+            # Positivo = crescente (acelerando/aumentando RPM); negativo = decrescente (freando)
+            row[f'{var}_slope'] = float(np.polyfit(t, vals, 1)[0]) if len(t) >= 2 else 0.0
+            # Dispersão relativa: quão errático estava o comportamento
+            row[f'{var}_cv'] = float(row[f'{var}_std'] / row[f'{var}_mean']) if row[f'{var}_mean'] != 0 else 0.0
 
         row['distance_car_curve'] = (
             janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
@@ -77,11 +93,31 @@ def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame
         row['n_perigo_dir_perigosa_janela'] = int(janela['direcao_perigosa'].sum())
         row['n_perigo_zigue_zague_janela'] = int(janela['zigue_zague'].sum())
 
-        row['manobra'] = 1 if curva['conducao'].sum() >= 2 else 0
-        row['manobra_accel_perigo'] = 1 if curva['aceleracao_anormal'].sum() >= 2 else 0
-        row['manobra_dir_perigosa'] = 1 if curva['direcao_perigosa'].sum() >= 2 else 0
-        row['manobra_zigue_zague'] = 1 if curva['zigue_zague'].sum() >= 2 else 0
+        # Threshold mean >= 0.5: a maioria dos pontos da curva deve ser Perigosa.
+        # "sum >= 2 pontos" era trivialmente atingido com amostragem 1 Hz (1 janela = ~10 pts).
+        row['manobra']              = 1 if curva['conducao'].mean() >= 0.5 else 0
+        row['manobra_accel_perigo'] = 1 if curva['aceleracao_anormal'].mean() >= 0.5 else 0
+        row['manobra_dir_perigosa'] = 1 if curva['direcao_perigosa'].mean() >= 0.5 else 0
+        row['manobra_zigue_zague']  = 1 if curva['zigue_zague'].mean() >= 0.5 else 0
 
         dados_janela.append(row)
 
-    return pd.DataFrame(dados_janela).reset_index(drop=True)
+    df_out = (
+        pd.DataFrame(dados_janela)
+        .sort_values(['id_route', 'time_inicio'])
+        .reset_index(drop=True)
+    )
+
+    # Contexto do trajeto: posição ordinal e histórico de perigo acumulado no mesmo trajeto.
+    # Válido em tempo real — ao chegar na N-ésima curva o motorista já vivenciou as N-1 anteriores.
+    partes = []
+    for _, grupo in df_out.groupby('id_route', sort=False):
+        grupo = grupo.copy()
+        grupo['n_curvas_antes']       = np.arange(len(grupo))
+        grupo['n_perigosas_antes']    = grupo['manobra'].shift(1).fillna(0).cumsum().astype(int)
+        grupo['prop_perigosas_antes'] = (
+            grupo['n_perigosas_antes'] / grupo['n_curvas_antes'].replace(0, np.nan)
+        ).fillna(0.0).round(3)
+        partes.append(grupo)
+
+    return pd.concat(partes, ignore_index=True)

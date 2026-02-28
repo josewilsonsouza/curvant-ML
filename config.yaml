@@ -35,7 +35,9 @@ driving_analysis:
   janela_tempo: 10            # segundos por janela de classificação
   var_velocidade_max: 20      # km/h — limite para aceleração/frenagem anormal
   velocidade_max_direcao: 30  # km/h — velocidade mínima para direção perigosa
-  angulo_max_direcao: 20.0    # graus — variação líquida de bearing máxima (Li et al.: 0.7 rad ≈ 40°)
+  angulo_max_direcao: 0.0     # 0.0 = desabilitado. O criterio GPS-bearing cria ciclo com gate DNIT:
+                              # dispara so dentro de curvas, tornando quase toda curva Perigosa.
+                              # Para reabilitar, use ~20-40 (Li et al.: 0.7 rad ≈ 40°)
   zigue_zague:
     limiar_bearing: 15        # graus — mudança mínima de bearing
     limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
