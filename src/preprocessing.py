@@ -1,120 +1,140 @@
-import math
+"""
+Pré-processamento de dados OBD para limpeza de ruídos identificados na análise exploratória.
+
+Etapas aplicadas (em ordem):
+  1. Clipa spikes do acelerômetro (|a| > limite fisicamente plausível)
+  2. Remove pontos com velocidade impossível (OBD bug)
+  3. Thinning de pontos parados consecutivos (GPS oscila quando parado → contamina spline)
+  4. Divide trajetos nos gaps temporais grandes (dados de momentos distintos concatenados)
+"""
 
 import numpy as np
 import pandas as pd
 
 
-def latlon_to_cartesian(latitudes, longitudes) -> list[tuple[float, float]]:
-    """Converte coordenadas lat/lon para coordenadas cartesianas em metros."""
-    latitudes_rad = [math.radians(lat) for lat in latitudes]
-    longitudes_rad = [math.radians(lon) for lon in longitudes]
-    lat0, lon0 = latitudes_rad[0], longitudes_rad[0]
-    R = 6_371_000  # raio da Terra em metros
-
-    coords = []
-    for lat, lon in zip(latitudes_rad, longitudes_rad):
-        if lat != lat0 or lon != lon0:
-            x = R * (lon - lon0) * math.cos((lat + lat0) / 2)
-            y = R * (lat - lat0)
-        else:
-            x, y = 0.0, 0.0
-        coords.append((x, y))
-    return coords
-
-
-def preprocess_trajectory(df: pd.DataFrame) -> pd.DataFrame:
+def clipar_acelerometro(df: pd.DataFrame, limite: float = 5.0) -> pd.DataFrame:
     """
-    Pré-processa um único DataFrame de trajeto:
-      - Calcula time_sec: usa coluna 'time' para rjdf/serra; converte 'timestamp' para eletronuclear
-      - Interpolação temporal de vehicle_speed, lat, lon para dados eletronuclear
-      - Calcula dt (delta de tempo), zerando quando o veículo estava parado no passo anterior
-      - Filtra baixíssimas velocidades + acelerações nulas
-      - Remove duplicatas de coordenadas/velocidade/combustível
-      - Adiciona coordenadas cartesianas x, y
-      - Remove colunas inteiramente zeradas ou nulas
+    Clipa spikes do acelerômetro para ±limite m/s².
+    Valores > 5 m/s² (~0.5g) são fisicamente improváveis em condução normal.
     """
     df = df.copy()
-    df.dropna(subset=['lat', 'lon'], inplace = True) # deletando valores invalidos de posição
-
-    loc_rjdf_serra = (
-        'loc_coleta' in df.columns
-        and len({'rjdf', 'serra'} & set(df['loc_coleta'].unique())) > 0
-    )
-
-    if loc_rjdf_serra:
-        df['time_sec'] = df['time']
-    else:
-        df['timestamp'] = pd.to_datetime(df['timestamp'], format='mixed')
-        df['time_sec'] = (df['timestamp'] - df['timestamp'].iloc[0]).dt.total_seconds()
-        df = df.set_index('timestamp').sort_index()
-        df[['vehicle_speed', 'lat', 'lon']] = (
-            df[['vehicle_speed', 'lat', 'lon']].interpolate(method='time')
-        )
-
-    df['dt'] = df['time_sec'].diff().fillna(0)
-    df['prev_speed'] = df['vehicle_speed'].shift(1).fillna(0)
-    df.loc[(df['prev_speed'] == 0) & (df['fuel_rate'] == 0), 'dt'] = 0
-    df.drop(columns='prev_speed', inplace=True)
-
-    df = df[~(
-        (df['vehicle_speed'] < 1)
-        & (df['accel_x'].abs() < 0.005)
-        & (df['accel_y'].abs() < 0.005)
-    )]
-    df = df.drop_duplicates(subset=['lat', 'lon', 'vehicle_speed', 'fuel_rate'], keep='last')
-    df.reset_index(drop=True, inplace=True)
-
-    if df.empty:
-        return df  # trajeto sem dados úteis após filtragem
-
-    coords = latlon_to_cartesian(df['lat'], df['lon'])
-    x, y = zip(*coords)
-    df = df.assign(x=x, y=y)
-
-    # protege x e y para não serem removidos pela limpeza de colunas zeradas
-    cols_to_drop = [
-        col for col in df.columns
-        if col not in ('x', 'y')
-        and (np.all(df[col] == 0) or df[col].notnull().sum() == 0)
-    ]
-    return df.drop(columns=cols_to_drop)
+    for col in ['accel_x', 'accel_y', 'accel_z']:
+        if col in df.columns:
+            df[col] = df[col].clip(-limite, limite)
+    return df
 
 
-def preprocess_all(
-    dfs: list[pd.DataFrame],
-    excluded_routes: list[str] | None = None,
-    verbose: bool = True,
-) -> list[pd.DataFrame]:
+def filtrar_velocidade(df: pd.DataFrame, vel_max: float = 150.0) -> pd.DataFrame:
+    """Remove pontos com velocidade acima de vel_max km/h (leituras OBD corrompidas)."""
+    return df[df['vehicle_speed'] <= vel_max].copy()
+
+
+def refinar_parados(df: pd.DataFrame, vel_min: float = 2.0, max_manter: int = 3) -> pd.DataFrame:
     """
-    Aplica preprocess_trajectory em todos os DataFrames.
+    Em cada sequência consecutiva de pontos parados (vel < vel_min), mantém apenas
+    os primeiros max_manter pontos e descarta o restante.
 
-    Parâmetros
-    ----------
-    excluded_routes : id_routes a descartar antes de processar (ex: trajetos com dados ruins)
+    Justificativa: quando o carro está parado, o GPS oscila em torno de um ponto fixo.
+    Isso cria curvaturas artificiais na B-spline que inflam o raio_curvatura calculado.
+    Manter alguns pontos preserva o contexto temporal; remover o excesso elimina o ruído.
     """
-    if excluded_routes:
-        dfs = [df for df in dfs if df['id_route'].iloc[0] not in excluded_routes]
+    partes = []
+    for _, grp in df.groupby('id_route', sort=False):
+        grp = grp.reset_index(drop=True)
+        manter = []
+        contador_parado = 0
 
-    result = []
-    for i, df in enumerate(dfs, start=1):
-        route = df['id_route'].iloc[0]
-        rows_prev, cols_prev = df.shape
-        try:
-            df_proc = preprocess_trajectory(df)
-        except Exception as e:
-            print(f'[ERRO] Trajeto {i} ({route}): {type(e).__name__}: {e} — ignorado')
-            continue
+        for i, vel in enumerate(grp['vehicle_speed']):
+            if vel < vel_min:
+                contador_parado += 1
+                if contador_parado <= max_manter:
+                    manter.append(i)
+            else:
+                contador_parado = 0
+                manter.append(i)
 
-        if df_proc.empty:
-            print(f'[AVISO] Trajeto {i} ({route}): vazio após filtragem — ignorado')
-            continue
+        partes.append(grp.iloc[manter])
 
-        rows_now, cols_now = df_proc.shape
-        if verbose:
-            print(
-                f'(Trajeto {i}) Linhas removidas: {rows_prev - rows_now}, '
-                f'tinha {rows_prev}, agora tem {rows_now}. '
-                f'Colunas antes: {cols_prev}, depois: {cols_now}  [{route}]'
-            )
-        result.append(df_proc)
-    return result
+    return pd.concat(partes, ignore_index=True)
+
+
+def splittar_por_gaps(
+    df: pd.DataFrame,
+    max_gap: float = 30.0,
+    min_pontos: int = 10,
+) -> pd.DataFrame:
+    """
+    Divide trajetos em sub-trajetos onde o intervalo temporal entre pontos consecutivos
+    excede max_gap segundos. Cria IDs no formato '<id_route>_p<N>'.
+
+    Sub-trajetos com menos de min_pontos pontos são descartados (insuficientes para
+    cálculo de spline cúbica e janelas de análise).
+
+    Reseta time_sec para começar em 0 em cada sub-trajeto.
+    """
+    partes = []
+    for id_route, grp in df.groupby('id_route', sort=False):
+        grp = grp.sort_values('time_sec').reset_index(drop=True)
+        dt = grp['time_sec'].diff().fillna(0)
+
+        # Índices onde começa um novo segmento (após gap)
+        cortes = [0] + dt[dt > max_gap].index.tolist() + [len(grp)]
+
+        n_segmentos = len(cortes) - 1
+        parte = 1
+        for i in range(n_segmentos):
+            sub = grp.iloc[cortes[i]:cortes[i + 1]].copy()
+            if len(sub) < min_pontos:
+                continue
+
+            # Renomeia apenas se há mais de um segmento válido
+            if n_segmentos > 1:
+                sub['id_route'] = f'{id_route}_p{parte}'
+
+            sub['time_sec'] = sub['time_sec'] - sub['time_sec'].iloc[0]
+            parte += 1
+            partes.append(sub)
+
+    return pd.concat(partes, ignore_index=True)
+
+
+def preprocessar(
+    df: pd.DataFrame,
+    accel_limite: float = 5.0,
+    vel_max: float = 150.0,
+    vel_min_parado: float = 2.0,
+    max_parados_consecutivos: int = 3,
+    max_gap: float = 30.0,
+    min_pontos_segmento: int = 10,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Aplica o pipeline completo de limpeza de ruído.
+
+    Retorna o DataFrame limpo e um dict com estatísticas do processo.
+    """
+    stats: dict = {
+        'n_original': len(df),
+        'trajs_original': df['id_route'].nunique(),
+    }
+
+    # 1. Acelerômetro
+    df = clipar_acelerometro(df, limite=accel_limite)
+
+    # 2. Velocidade impossível
+    n_antes = len(df)
+    df = filtrar_velocidade(df, vel_max=vel_max)
+    stats['removidos_vel'] = n_antes - len(df)
+
+    # 3. Pontos parados excessivos
+    n_antes = len(df)
+    df = refinar_parados(df, vel_min=vel_min_parado, max_manter=max_parados_consecutivos)
+    stats['removidos_parados'] = n_antes - len(df)
+
+    # 4. Split nos gaps temporais
+    n_trajs_antes = df['id_route'].nunique()
+    df = splittar_por_gaps(df, max_gap=max_gap, min_pontos=min_pontos_segmento)
+    stats['trajs_apos_split'] = df['id_route'].nunique()
+    stats['novos_segmentos'] = stats['trajs_apos_split'] - n_trajs_antes
+    stats['n_final'] = len(df)
+
+    return df, stats

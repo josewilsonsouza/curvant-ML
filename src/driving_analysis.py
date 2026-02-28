@@ -1,6 +1,19 @@
 import numpy as np
 import pandas as pd
 
+# Mapeamento classe DNIT → nível de risco inteiro (para comparações)
+_DNIT_RISCO: dict[str, int] = {
+    'suave':         0,  # R > 500 m — permissível em velocidade
+    'aberta':        1,  # 200 m < R ≤ 500 m — risco baixo
+    'media':         2,  # 100 m < R ≤ 200 m — risco moderado
+    'fechada':       3,  # 50 m < R ≤ 100 m — risco alto
+    'muito_fechada': 4,  # R ≤ 50 m — risco muito alto
+}
+
+# Nível mínimo de risco DNIT para aplicar o critério de direção perigosa.
+# Abaixo desse nível (curvas suave/aberta), alta velocidade é permissível.
+_RISCO_MIN_DIRECAO = 2  # 'media' em diante
+
 
 def calcular_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """Calcula o ângulo de direção (bearing) entre dois pontos geográficos, em graus [0, 360)."""
@@ -18,12 +31,18 @@ def detectar_aceleracao_anormal(var_velocidade: float, limite: float = 15.0) -> 
 
 def detectar_direcao_perigosa(
     velocidade: float,
-    theta: float,
+    theta_graus: float,
     velocidade_min: float = 30.0,
-    angulo_max: float = 0.7,
+    angulo_max_graus: float = 40.0,
 ) -> bool:
-    """True se o veículo estiver acima de velocidade_min e com variação angular abaixo de angulo_max rad."""
-    return velocidade > velocidade_min and np.abs(theta) < angulo_max
+    """
+    True se o veículo estiver acima de velocidade_min km/h e com variação líquida
+    de bearing abaixo de angulo_max_graus graus.
+
+    Ambos os ângulos estão em GRAUS (bearing é calculado em graus [0, 360)).
+    Equivalência Li et al. (2016): angulo_max = 0.7 rad ≈ 40.1°.
+    """
+    return velocidade > velocidade_min and np.abs(theta_graus) < angulo_max_graus
 
 
 def detectar_zigue_zague(
@@ -49,7 +68,7 @@ def detectar_zigue_zague(
 
     contador = 0
     for i in range(1, len(bearing_angles)):
-        mudanca = abs(bearing_angles[i] - bearing_angles[i - 1])
+        mudanca = abs((bearing_angles[i] - bearing_angles[i - 1] + 180) % 360 - 180)
         if mudanca > limiar_bearing and abs(ctp_accel[i]) > limiar_accel_lateral:
             contador += 1
             if contador >= min_mudancas:
@@ -62,7 +81,7 @@ def detectar_conducao_perigosa(
     janela_tempo: int = 10,
     var_velocidade_max: float = 15.0,
     velocidade_max_direcao: float = 30.0,
-    angulo_max_direcao: float = 0.7,
+    angulo_max_direcao: float = 40.0,
 ) -> pd.DataFrame:
     """
     Classifica janelas de tempo como 'Perigosa' ou 'Segura' conforme Li et al. (2016).
@@ -89,17 +108,37 @@ def detectar_conducao_perigosa(
         var_vel = janela['vehicle_speed'].diff().abs().sum()
         aceleracao_anormal = detectar_aceleracao_anormal(var_vel, var_velocidade_max)
 
-        # 2. Direção perigosa
+        # Classe DNIT mais restritiva da janela (menor raio = maior risco)
+        if 'classe_dnit' in janela.columns:
+            risco_dnit = int(janela['classe_dnit'].map(_DNIT_RISCO).max())
+        else:
+            risco_dnit = 3  # fallback conservador se coluna ausente
+
+        # 2. Direção perigosa — suprimida em curvas suave/aberta (risco DNIT < 2)
         lats = janela['lat'].tolist()
         lons = janela['lon'].tolist()
-        thetas = [
-            calcular_bearing(lats[i - 1], lons[i - 1], lats[i], lons[i])
-            for i in range(1, len(janela))
-        ]
-        theta_direcao = float(np.abs(np.sum(np.diff(thetas)))) if thetas else 0.0
-        direcao_perigosa = detectar_direcao_perigosa(
-            janela['vehicle_speed'].mean(), theta_direcao,
-            velocidade_max_direcao, angulo_max_direcao,
+        # Variação de heading robusta a ruído GPS:
+        # Comparamos o bearing da primeira metade da janela com o bearing da janela toda.
+        # Usar bearings ponto-a-ponto (< 1m de distância) produz ruído de ±40–90° que
+        # domina o sinal real — daí a mediana de theta ≈ 5° mesmo em curvas reais.
+        n = len(lats)
+        if n >= 4:
+            mid = n // 2
+            b_inicio = calcular_bearing(lats[0], lons[0], lats[mid], lons[mid])
+            b_total  = calcular_bearing(lats[0], lons[0], lats[-1], lons[-1])
+            theta_direcao = float(abs((b_total - b_inicio + 180) % 360 - 180))
+        elif n >= 2:
+            theta_direcao = float(abs((
+                calcular_bearing(lats[0], lons[0], lats[-1], lons[-1]) + 180
+            ) % 360 - 180))
+        else:
+            theta_direcao = 0.0
+        direcao_perigosa = (
+            risco_dnit >= _RISCO_MIN_DIRECAO
+            and detectar_direcao_perigosa(
+                janela['vehicle_speed'].mean(), theta_direcao,
+                velocidade_max_direcao, angulo_max_direcao,
+            )
         )
 
         # 3. Zigue-zague
@@ -113,6 +152,7 @@ def detectar_conducao_perigosa(
         janela['direcao_perigosa'] = direcao_perigosa
         janela['zigue_zague'] = zigue_zague
         janela['theta_direcao'] = theta_direcao
+        janela['risco_dnit'] = risco_dnit
         janela['id_janela'] = id_janela
         id_janela += 1
 

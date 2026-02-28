@@ -1,61 +1,144 @@
 import numpy as np
 import pandas as pd
 from scipy.interpolate import make_interp_spline
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d, binary_opening
 
 
-def detectar_curvas(
-    df: pd.DataFrame,
-    sigma: float = 2,
-    limiar: float = 30,
-    limite_raio: float = 50,
-    name_traj: str | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+# ── Sigma adaptativo ──────────────────────────────────────────────────────────
+
+def _sigma_adaptativo(
+    x: np.ndarray,
+    y: np.ndarray,
+    target_metros: float = 20.0,
+    sigma_min: float = 1.0,
+    sigma_max: float = 8.0,
+) -> float:
     """
-    Detecta curvas em um trajeto e calcula o raio de curvatura via curvatura de Frenet.
+    Calcula o sigma de suavização gaussiana com base na densidade de pontos GPS.
+
+    Lógica: para suavizar uma janela de target_metros, precisamos de
+        sigma ≈ target_metros / espaçamento_mediano  (em número de pontos)
+
+    GPS denso  (d ≈ 2 m/ponto)  → sigma ≈ 10  → mais suavização
+    GPS esparso (d ≈ 20 m/ponto) → sigma ≈ 1   → menos suavização
 
     Parâmetros
     ----------
-    sigma       : suavização gaussiana sobre a curvatura
-    limiar      : percentil de corte para classificar ponto como curva
-    limite_raio : usado apenas por plot_trajeto_com_curvatura
-    name_traj   : filtra por id_route se fornecido
-
-    Retorna (df_final, df_unicos)
+    target_metros : extensão espacial (em metros) que deve ser suavizada
+    sigma_min     : piso — evita suavização insuficiente
+    sigma_max     : teto — evita apagar curvas reais em GPS muito denso
     """
+    dist = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
+    dist_validas = dist[dist > 0.1]    # descarta pontos quase coincidentes
+    if len(dist_validas) == 0:
+        return float(sigma_min)
+    mediana = float(np.median(dist_validas))
+    sigma = target_metros / mediana
+    return float(np.clip(sigma, sigma_min, sigma_max))
+
+
+# Classificação DNIT de curvas horizontais
+# Grau de curva: D = 1145.92 / R  (graus por corda de 20 m)
+# Referência: Manual de Projeto Geométrico de Rodovias Rurais, DNIT (2010)
+_DNIT_LIMIARES: list[tuple[float, str]] = [
+    (50,  'muito_fechada'),  # D > 22.9° — risco muito alto
+    (100, 'fechada'),        # 11.5° < D ≤ 22.9° — risco alto
+    (200, 'media'),          # 5.7°  < D ≤ 11.5° — risco moderado
+    (500, 'aberta'),         # 2.3°  < D ≤  5.7° — risco baixo
+]
+
+
+def classificar_curva_dnit(raio: float) -> str:
+    """
+    Classifica a intensidade da curva segundo o grau de curvatura do DNIT.
+
+    D = 1145.92 / R  (graus por corda de 20 m)
+
+    Retorna uma das classes: 'muito_fechada', 'fechada', 'media', 'aberta', 'suave'.
+    """
+    for limite, classe in _DNIT_LIMIARES:
+        if raio <= limite:
+            return classe
+    return 'suave'  # R > 500 m (D < 2.3°) ou reta
+
+
+def detectar_curvas(df,
+                    sigma=2,
+                    limite_raio=100,
+                    min_pontos=3,
+                    name_traj=None):
+    '''
+    Detecta curvas em um trajeto usando curvatura de Frenet via B-spline cúbica.
+
+    Parâmetros
+    ----------
+    sigma       : suavização gaussiana sobre a curvatura.
+                  Pode ser um número fixo (ex.: 2) ou a string 'auto'.
+                  Com 'auto', o sigma é calculado por _sigma_adaptativo():
+                  sigma ≈ 20m / espaçamento_mediano_entre_pontos, clipado em [1, 8].
+                  GPS denso (2 m/pt) → sigma ≈ 10 (mais suave);
+                  GPS esparso (20 m/pt) → sigma ≈ 1 (menos suave).
+    limite_raio : raio máximo (metros) para classificar um ponto como curva
+    min_pontos  : mínimo de pontos consecutivos para considerar curva válida
+                  (elimina picos isolados de ruído GPS)
+    '''
     if name_traj is not None:
         df = df.query(f'id_route == "{name_traj}"').copy()
 
     df = df.copy()
-    df_unicos = df.drop_duplicates(subset=['lat', 'lon'], keep='last').reset_index(drop=True)
 
-    x, y = df_unicos['x'].values, df_unicos['y'].values
+    if 'x' not in df.columns or 'y' not in df.columns:
+        print(df.id_route.unique()[0])
+
+    df_unicos = df.drop_duplicates(subset=['lat', 'lon', 'vehicle_speed'], keep='last').reset_index(drop=True)
+
+    if len(df_unicos) < 4:
+        raise ValueError(
+            f"Trajeto {df['id_route'].iloc[0]!r} tem apenas {len(df_unicos)} ponto(s) "
+            "únicos após drop_duplicates — mínimo de 4 para spline cúbica."
+        )
+
+    x = df_unicos['x'].values
+    y = df_unicos['y'].values
     t = np.arange(len(x))
 
+    if sigma == 'auto':
+        sigma = _sigma_adaptativo(x, y)
+
+    # Spline cúbica
     cs = make_interp_spline(t, np.c_[x, y], k=3)
-    t_fino = np.linspace(0, len(x) - 1, len(x))
-    x_interp, y_interp = cs(t_fino).T
 
-    dxdt = np.gradient(x_interp, t_fino)
-    dydt = np.gradient(y_interp, t_fino)
-    ddx = np.gradient(dxdt, t_fino)
-    ddy = np.gradient(dydt, t_fino)
+    # Derivadas analíticas da spline — exatas, sem amplificação de ruído de np.gradient
+    d1 = cs.derivative(1)(t)
+    d2 = cs.derivative(2)(t)
+    dxdt, dydt = d1[:, 0], d1[:, 1]
+    ddx,  ddy  = d2[:, 0], d2[:, 1]
 
+    # Curvatura de Frenet: κ = |x'y'' - y'x''| / (x'^2 + y'^2)^(3/2)
     denom = np.power(dxdt**2 + dydt**2, 3 / 2)
     with np.errstate(invalid='ignore', divide='ignore'):
         curvatura = np.where(denom > 0, np.abs(dxdt * ddy - dydt * ddx) / denom, 0.0)
-    curvatura_suave = gaussian_filter1d(curvatura, sigma=sigma)
-    sinal_curvatura = np.sign(gaussian_filter1d(dxdt * ddy - dydt * ddx, sigma=2))
 
-    pontos_curva = curvatura_suave > np.percentile(curvatura_suave, limiar)
+    curvatura_suave = gaussian_filter1d(curvatura, sigma=sigma)
+    sinal_curvatura = np.sign(gaussian_filter1d(dxdt * ddy - dydt * ddx, sigma=sigma))
 
     with np.errstate(divide='ignore', invalid='ignore'):
         raio_curvatura = np.where(curvatura_suave != 0, 1 / curvatura_suave, np.inf)
 
-    distancia_acumulada = np.zeros(len(x_interp))
-    distancia_acumulada[1:] = np.cumsum(
-        np.sqrt(np.diff(x_interp) ** 2 + np.diff(y_interp) ** 2)
-    )
+    # Critério absoluto: raio < limite_raio
+    # binary_opening remove segmentos com menos de min_pontos consecutivos (ruído GPS)
+    pontos_curva = raio_curvatura < limite_raio
+    pontos_curva = binary_opening(pontos_curva, iterations=min_pontos)
+
+    distancia_acumulada = np.zeros(len(x))
+    distancia_acumulada[1:] = np.cumsum(np.sqrt(np.diff(x)**2 + np.diff(y)**2))
+
+    # Aplica DNIT apenas nos pontos que a detecção confirmou como curva real
+    # (binary_opening já filtrou picos isolados de GPS).
+    # Pontos fora de curva recebem 'suave' independente do raio calculado,
+    # que é não-confiável em trechos retos por ruído GPS na B-spline.
+    classe_dnit_raw = np.vectorize(classificar_curva_dnit)(raio_curvatura)
+    classe_dnit = np.where(pontos_curva, classe_dnit_raw, 'suave')
 
     df_unicos = df_unicos.assign(
         raio_curvatura=raio_curvatura,
@@ -63,22 +146,10 @@ def detectar_curvas(
         curva=pontos_curva,
         sinal_curvatura=sinal_curvatura,
         distancia_acumulada=distancia_acumulada,
+        classe_dnit=classe_dnit,
     )
 
     return df_unicos
-
-
-def detectar_curvas_todos(
-    dfs: list[pd.DataFrame],
-    sigma: float = 2,
-    limiar: float = 30,
-) -> pd.DataFrame:
-    """Aplica detectar_curvas em todos os trajetos e retorna df_unicos concatenado."""
-    return pd.concat(
-        [detectar_curvas(df, sigma=sigma, limiar=limiar)[1] for df in dfs],
-        ignore_index=True,
-    )
-
 
 def identificar_trechos_curvos(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -106,20 +177,3 @@ def identificar_trechos_curvos(df: pd.DataFrame) -> pd.DataFrame:
         partes.append(df_traj)
 
     return pd.concat(partes, ignore_index=True)
-
-
-def contar_curvas(dfs_curves: pd.DataFrame) -> dict[str, int]:
-    """Retorna dicionário {id_route: número de curvas detectadas}."""
-    contagem = {}
-    for traj in dfs_curves['id_route'].unique():
-        df = dfs_curves.query(f'id_route == "{traj}"')
-        curva = df['curva'].tolist()
-        n, em_sequencia = 0, False
-        for val in curva:
-            if val and not em_sequencia:
-                n += 1
-                em_sequencia = True
-            elif not val:
-                em_sequencia = False
-        contagem[traj] = n
-    return contagem

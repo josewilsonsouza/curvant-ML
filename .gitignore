@@ -3,3 +3,5 @@ CLAUDE.md
 *.csv
 *.ipynb_checkpoints
 routes_ML_inmetro/
+data/eletro_rjdf_serra_clean.parquet
+plots-test.py

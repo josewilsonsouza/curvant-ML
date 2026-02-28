@@ -1,17 +1,28 @@
+import os
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.linear_model import LogisticRegression
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
+
+from sklearn.decomposition import PCA
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.tree import DecisionTreeClassifier
-from sklearn import svm
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix,
+    f1_score, precision_score, recall_score,
+)
+from sklearn.model_selection import (
+    GridSearchCV, StratifiedKFold,
+    cross_validate, train_test_split,
+)
 from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
-from sklearn.metrics import confusion_matrix, accuracy_score
-from imblearn.over_sampling import SMOTE
+from sklearn.tree import DecisionTreeClassifier
+from sklearn import svm
 
 _COLS_EXCLUIR = [
     'manobra', 'id_route', 'id_trecho_curvo', 'time_inicio', 'time_fim',
@@ -19,22 +30,62 @@ _COLS_EXCLUIR = [
 ]
 
 
-def _preparar_xy(
-    df: pd.DataFrame,
-    target: str = 'manobra',
-    random_state: int = 42,
-    use_smote: bool = True,
-) -> tuple[np.ndarray, np.ndarray, StandardScaler]:
-    """Retorna (X_scaled, y, scaler) após SMOTE e StandardScaler."""
-    feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
-    X = df[feature_cols].values
-    y = df[target].values
+# ── Utilitários internos ──────────────────────────────────────────────────────
 
+def _preparar_xy(df: pd.DataFrame, target: str = 'manobra') -> tuple[np.ndarray, np.ndarray]:
+    """Extrai features e target como arrays numpy brutos (sem pré-processamento)."""
+    feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
+    df_clean = df[feature_cols + [target]].dropna()
+    return df_clean[feature_cols].values, df_clean[target].values
+
+
+def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca_n_components=None):
+    """
+    Constrói imblearn Pipeline: (SMOTE →) StandardScaler (→ PCA) → classificador.
+
+    ImbPipeline garante que o SMOTE é re-executado apenas no fold de treino
+    durante cross_validate — amostras sintéticas nunca cruzam para o fold de
+    validação, evitando data leakage.
+    """
+    steps = []
     if use_smote:
-        X, y = SMOTE(random_state=random_state).fit_resample(X, y)
+        steps.append(('smote', SMOTE(random_state=random_state)))
+    steps.append(('scaler', StandardScaler()))
+    if pca_n_components is not None:
+        steps.append(('pca', PCA(n_components=pca_n_components, random_state=random_state)))
+    steps.append(('clf', clf))
+    return ImbPipeline(steps)
+
+
+def _preproc_train_test(
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    use_smote: bool = True,
+    random_state: int = 42,
+    pca_n_components=None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Aplica SMOTE (opcional) → StandardScaler → PCA (opcional) corretamente:
+      - SMOTE apenas em X_train / y_train
+      - Scaler e PCA: fit em X_train, transform em X_test (sem vazar estatísticas do teste)
+
+    Retorna (X_train_pp, X_test_pp, y_train_pp).
+    """
+    if use_smote:
+        X_train, y_train = SMOTE(random_state=random_state).fit_resample(X_train, y_train)
 
     scaler = StandardScaler()
-    return scaler.fit_transform(X), y, scaler
+    X_train = scaler.fit_transform(X_train)
+    X_test  = scaler.transform(X_test)
+
+    if pca_n_components is not None:
+        pca = PCA(n_components=pca_n_components, random_state=random_state)
+        X_train = pca.fit_transform(X_train)
+        X_test  = pca.transform(X_test)
+        print(f'  PCA: {pca.n_components_} componentes — variância explicada: {pca.explained_variance_ratio_.sum():.1%}')
+
+    return X_train, X_test, y_train
 
 
 # ── Modelos clássicos ─────────────────────────────────────────────────────────
@@ -45,36 +96,63 @@ def aplicar_modelos_ml(
     random_state: int = 42,
     test_size: float = 0.3,
     cv_folds: int = 5,
+    pca_n_components=None,
 ) -> pd.DataFrame:
     """
-    Treina e avalia modelos clássicos de ML com validação cruzada k-fold.
-    Retorna DataFrame pivotado com acurácia por bloco e classificador.
+    Treina e avalia modelos clássicos de ML.
+
+    Metodologia correta:
+      1. Split estratificado nos dados BRUTOS (antes de SMOTE / scaler / PCA)
+      2. StratifiedKFold sobre X_train bruto
+      3. Dentro de cada fold: SMOTE → Scaler (→ PCA) → fit  (via ImbPipeline)
+         — amostras sintéticas nunca cruzam para o fold de validação
+      4. Avaliação no teste com Acurácia, F1 weighted, Precisão, Recall
+
+    pca_n_components : None | int (nº de componentes) | float 0–1 (variância explicada)
     """
-    X_scaled, y, _ = _preparar_xy(df, random_state=random_state)
+    X, y = _preparar_xy(df)
     X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=test_size, random_state=random_state
+        X, y, test_size=test_size, random_state=random_state, stratify=y,
     )
 
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+
     modelos = {
-        'Regressão Logística': LogisticRegression(random_state=random_state),
-        'SVM': svm.SVC(kernel='linear', random_state=random_state),
-        'Árvore de Decisão': DecisionTreeClassifier(random_state=random_state),
-        'Floresta Aleatória': RandomForestClassifier(random_state=random_state),
-        'Rede Neural (MLP)': MLPClassifier(
-            activation='relu', learning_rate='constant', solver='adam',
+        'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
+        'SVM':                 svm.SVC(kernel='linear', random_state=random_state),
+        'Árvore de Decisão':   DecisionTreeClassifier(random_state=random_state),
+        'Floresta Aleatória':  RandomForestClassifier(random_state=random_state),
+        'Rede Neural (MLP)':   MLPClassifier(
+            activation='relu', solver='adam',
             hidden_layer_sizes=(128, 64), max_iter=2000, random_state=random_state,
         ),
     }
 
-    resultados = []
-    for nome, modelo in modelos.items():
-        scores = cross_val_score(modelo, X_scaled, y, cv=cv_folds)
-        modelo.fit(X_train, y_train)
-        y_pred = modelo.predict(X_test)
-        print(f'{nome} — Acurácia: {accuracy_score(y_test, y_pred):.4f}')
+    linhas = []
+    for nome, clf in modelos.items():
+        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components)
 
-        for fold, score in enumerate(scores, start=1):
-            resultados.append({'Bloco': f'Bloco {fold}', 'Classificador': nome, 'Acurácia': score})
+        # cross_validate sobre X_train bruto — SMOTE contido em cada fold pelo ImbPipeline
+        cv_res = cross_validate(
+            pipe, X_train, y_train, cv=cv,
+            scoring={'acc': 'accuracy', 'f1': 'f1_weighted'},
+        )
+        cv_acc = cv_res['test_acc'].mean()
+        cv_f1  = cv_res['test_f1'].mean()
+
+        # Avaliação final no conjunto de teste (nunca visto pelo pipeline)
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+
+        acc  = accuracy_score(y_test, y_pred)
+        f1   = f1_score(y_test, y_pred, average='weighted')
+        prec = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+        rec  = recall_score(y_test, y_pred, average='weighted')
+
+        print(
+            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
+            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
+        )
 
         if plot_cm:
             cm = confusion_matrix(y_test, y_pred)
@@ -85,29 +163,45 @@ def aplicar_modelos_ml(
             plt.title(nome)
             plt.ylabel('Real')
             plt.xlabel('Prevista')
-            plt.savefig(f'matriz_confusao_{nome}.pdf', bbox_inches='tight')
+            os.makedirs('results', exist_ok=True)
+            plt.savefig(f'results/matriz_confusao_{nome}.pdf', bbox_inches='tight')
             plt.show()
 
-    df_pivot = (
-        pd.DataFrame(resultados)
-        .pivot(index='Bloco', columns='Classificador', values='Acurácia')
-    )
-    df_pivot.to_latex('ml_resultados.tex', float_format='%.2f')
-    return df_pivot.reset_index()
+        linhas.append({
+            'Classificador':    nome,
+            'CV Acc (média)':   cv_acc,
+            'CV F1 (média)':    cv_f1,
+            'Acc (teste)':      acc,
+            'F1 (teste)':       f1,
+            'Precisão (teste)': prec,
+            'Recall (teste)':   rec,
+        })
+
+    df_res = pd.DataFrame(linhas)
+    os.makedirs('results', exist_ok=True)
+    df_res.to_latex('results/ml_resultados.tex', float_format='%.3f', index=False)
+    return df_res
 
 
 def treinar_mlp_sklearn(
     df: pd.DataFrame,
     random_state: int = 42,
     test_size: float = 0.3,
+    pca_n_components=None,
 ) -> MLPClassifier:
     """
-    Treina um MLPClassifier (sklearn) com GridSearchCV e plota matriz de confusão
-    e curva de perda. Reporta possível overfitting.
+    Treina MLPClassifier com GridSearchCV.
+    SMOTE, StandardScaler e PCA aplicados apenas no conjunto de treino.
+    GridSearchCV usa f1_weighted (mais adequado que accuracy para dados desbalanceados).
     """
-    X_scaled, y, _ = _preparar_xy(df, random_state=random_state)
+    X, y = _preparar_xy(df)
     X_train, X_test, y_train, y_test = train_test_split(
-        X_scaled, y, test_size=test_size, random_state=random_state
+        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    )
+
+    X_train_pp, X_test_pp, y_train_pp = _preproc_train_test(
+        X_train, X_test, y_train,
+        use_smote=True, random_state=random_state, pca_n_components=pca_n_components,
     )
 
     param_grid = {
@@ -117,20 +211,28 @@ def treinar_mlp_sklearn(
         'alpha': [0.0001],
         'learning_rate': ['constant'],
     }
+    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
     grid = GridSearchCV(
         MLPClassifier(max_iter=2000, random_state=random_state),
-        param_grid, cv=5, scoring='accuracy', n_jobs=-1, return_train_score=True,
+        param_grid, cv=cv, scoring='f1_weighted', n_jobs=-1, return_train_score=True,
     )
-    grid.fit(X_train, y_train)
+    grid.fit(X_train_pp, y_train_pp)
     best = grid.best_estimator_
-    print(f'Melhores parâmetros: {grid.best_params_}')
+    print(f'  Melhores parâmetros: {grid.best_params_}')
 
-    y_pred = best.predict(X_test)
-    train_acc = best.score(X_train, y_train)
-    test_acc = accuracy_score(y_test, y_pred)
-    print(f'Acurácia — Treino: {train_acc:.4f} | Teste: {test_acc:.4f}')
+    y_pred    = best.predict(X_test_pp)
+    train_acc = best.score(X_train_pp, y_train_pp)
+    test_acc  = accuracy_score(y_test, y_pred)
+    test_f1   = f1_score(y_test, y_pred, average='weighted')
+    test_prec = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+    test_rec  = recall_score(y_test, y_pred, average='weighted')
+
+    print(
+        f'  Treino Acc: {train_acc:.4f} | '
+        f'Teste Acc: {test_acc:.4f}  F1: {test_f1:.4f}  Prec: {test_prec:.4f}  Rec: {test_rec:.4f}'
+    )
     if train_acc - test_acc > 0.1:
-        print('Aviso: possível overfitting detectado.')
+        print('  Aviso: possível overfitting detectado.')
 
     cm = confusion_matrix(y_test, y_pred)
     plt.figure(figsize=(6, 4))
@@ -160,13 +262,24 @@ def preparar_dados_keras(
     target: str = 'manobra',
     test_size: float = 0.3,
     random_state: int = 42,
+    pca_n_components=None,
 ) -> tuple:
-    """Prepara dados com SMOTE + StandardScaler + to_categorical para modelos Keras."""
+    """
+    Prepara dados para MLP Keras.
+    Split estratificado → SMOTE + Scaler (→ PCA) apenas no treino.
+    Retorna (X_train, X_test, y_train_cat, y_test_cat).
+    """
     from tensorflow.keras.utils import to_categorical
 
-    X_scaled, y, _ = _preparar_xy(df, target=target, random_state=random_state)
-    y_cat = to_categorical(y)
-    return train_test_split(X_scaled, y_cat, test_size=test_size, random_state=random_state)
+    X, y = _preparar_xy(df, target=target)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    )
+    X_train, X_test, y_train = _preproc_train_test(
+        X_train, X_test, y_train,
+        use_smote=True, random_state=random_state, pca_n_components=pca_n_components,
+    )
+    return X_train, X_test, to_categorical(y_train), to_categorical(y_test)
 
 
 def construir_mlp_keras(num_features: int):
@@ -193,18 +306,34 @@ def preparar_dados_gru(
     target: str = 'manobra',
     test_size: float = 0.3,
     random_state: int = 42,
+    pca_n_components=None,
 ) -> tuple:
-    """Prepara dados no formato 3D (samples, timesteps, features) para GRU."""
+    """
+    Prepara dados 3D (samples, timesteps, features) para GRU.
+    Split estratificado → Scaler (→ PCA) apenas no treino (sem SMOTE — dados sequenciais).
+    Retorna (X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features).
+    """
     from tensorflow.keras.utils import to_categorical
 
-    X_scaled, y, _ = _preparar_xy(df, target=target, random_state=random_state, use_smote=False)
-    num_features = X_scaled.shape[1]
-    num_samples = X_scaled.shape[0] // janela_tempo
+    X, y = _preparar_xy(df, target=target)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    )
+    X_train, X_test, y_train = _preproc_train_test(
+        X_train, X_test, y_train,
+        use_smote=False, random_state=random_state, pca_n_components=pca_n_components,
+    )
 
-    X_3d = X_scaled[:num_samples * janela_tempo].reshape(num_samples, janela_tempo, num_features)
-    y_cat = to_categorical(y[:num_samples])
+    num_features = X_train.shape[1]
+    n_train = X_train.shape[0] // janela_tempo
+    n_test  = X_test.shape[0]  // janela_tempo
 
-    return *train_test_split(X_3d, y_cat, test_size=test_size, random_state=random_state), num_features
+    X_train_3d  = X_train[:n_train * janela_tempo].reshape(n_train, janela_tempo, num_features)
+    X_test_3d   = X_test[:n_test * janela_tempo].reshape(n_test, janela_tempo, num_features)
+    y_train_cat = to_categorical(y_train[:n_train])
+    y_test_cat  = to_categorical(y_test[:n_test])
+
+    return X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features
 
 
 def construir_gru(janela_tempo: int, num_features: int):
@@ -229,19 +358,34 @@ def preparar_dados_lstm(
     target: str = 'manobra',
     test_size: float = 0.3,
     random_state: int = 42,
+    pca_n_components=None,
 ) -> tuple:
-    """Prepara dados no formato 3D (samples, timesteps, features) para LSTM.
-    Idêntico ao GRU — reutilizável para qualquer modelo recorrente."""
+    """
+    Prepara dados 3D para LSTM. Idêntico ao GRU.
+    Split estratificado → Scaler (→ PCA) apenas no treino, sem SMOTE.
+    Retorna (X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features).
+    """
     from tensorflow.keras.utils import to_categorical
 
-    X_scaled, y, _ = _preparar_xy(df, target=target, random_state=random_state, use_smote=False)
-    num_features = X_scaled.shape[1]
-    num_samples = X_scaled.shape[0] // janela_tempo
+    X, y = _preparar_xy(df, target=target)
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    )
+    X_train, X_test, y_train = _preproc_train_test(
+        X_train, X_test, y_train,
+        use_smote=False, random_state=random_state, pca_n_components=pca_n_components,
+    )
 
-    X_3d = X_scaled[:num_samples * janela_tempo].reshape(num_samples, janela_tempo, num_features)
-    y_cat = to_categorical(y[:num_samples])
+    num_features = X_train.shape[1]
+    n_train = X_train.shape[0] // janela_tempo
+    n_test  = X_test.shape[0]  // janela_tempo
 
-    return *train_test_split(X_3d, y_cat, test_size=test_size, random_state=random_state), num_features
+    X_train_3d  = X_train[:n_train * janela_tempo].reshape(n_train, janela_tempo, num_features)
+    X_test_3d   = X_test[:n_test * janela_tempo].reshape(n_test, janela_tempo, num_features)
+    y_train_cat = to_categorical(y_train[:n_train])
+    y_test_cat  = to_categorical(y_test[:n_test])
+
+    return X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features
 
 
 def construir_lstm(janela_tempo: int, num_features: int):

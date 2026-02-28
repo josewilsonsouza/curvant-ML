@@ -1,6 +1,5 @@
 import pandas as pd
 
-
 def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
     """Retorna estatísticas médias de variáveis-chave agrupadas por trajeto."""
     vars_interesse = {

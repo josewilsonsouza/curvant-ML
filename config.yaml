@@ -11,16 +11,31 @@ data:
     - obd-17-van-circuito-t1
     - obd-17-van-cicuito-t2
 
+preprocessing:
+  accel_limite: 5.0              # m/s² — clip de spikes do acelerômetro
+  vel_max: 150.0                 # km/h — velocidade máxima plausível
+  vel_min_parado: 2.0            # km/h — abaixo disso = parado
+  max_parados_consecutivos: 3    # pontos parados consecutivos mantidos
+  max_gap: 30.0                  # s — gap que divide um trajeto em sub-trajetos
+  min_pontos_segmento: 10        # pontos mínimos por sub-trajeto
+
 curve_detection:
   sigma: 2          # suavização gaussiana
-  limiar: 30        # percentil de corte para curvatura
-  limite_raio: 50   # metros — usado apenas em visualizações
+  limite_raio: 100   # metros — usado apenas em visualizações
+  # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010)
+  # D = 1145.92 / R  (grau de curva por corda de 20 m)
+  dnit:
+    muito_fechada: 50    # R ≤ 50 m  — D > 22.9°
+    fechada:      100    # R ≤ 100 m — D > 11.5°
+    media:        200    # R ≤ 200 m — D >  5.7°
+    aberta:       500    # R ≤ 500 m — D >  2.3°
+    # suave: R > 500 m
 
 driving_analysis:
   janela_tempo: 10            # segundos por janela de classificação
-  var_velocidade_max: 15      # km/h — limite para aceleração/frenagem anormal
+  var_velocidade_max: 20      # km/h — limite para aceleração/frenagem anormal
   velocidade_max_direcao: 30  # km/h — velocidade mínima para direção perigosa
-  angulo_max_direcao: 0.7     # rad  — variação angular máxima (Li et al., 2016)
+  angulo_max_direcao: 20.0    # graus — variação líquida de bearing máxima (Li et al.: 0.7 rad ≈ 40°)
   zigue_zague:
     limiar_bearing: 15        # graus — mudança mínima de bearing
     limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
@@ -39,6 +54,11 @@ ml:
   test_size: 0.3
   cv_folds: 5
   use_smote: true
+  # PCA antes dos modelos (aplicado após SMOTE + StandardScaler):
+  #   null        — desativado (padrão)
+  #   float 0–1   — manter N% da variância explicada  (ex.: 0.95)
+  #   int ≥ 1     — número fixo de componentes        (ex.: 10)
+  pca_n_components: null
 
 neural_networks:
   mlp_sklearn:
