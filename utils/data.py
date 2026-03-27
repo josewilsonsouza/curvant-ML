@@ -1,9 +1,10 @@
 import pandas as pd
 
+
 def load_data(file_path: str) -> pd.DataFrame:
     """
-    Carrega os dados do trajeto a partir de um arquivo CSV ou Parquet ou Excel.
-    Supomos que seja um arquivo concatenado de todos os trajetos.
+    Carrega os dados do trajeto a partir de um arquivo CSV, Parquet ou Excel.
+    Supõe que seja um arquivo concatenado de todos os trajetos.
     """
     if file_path.endswith(".csv"):
         return pd.read_csv(file_path)
@@ -13,6 +14,7 @@ def load_data(file_path: str) -> pd.DataFrame:
         return pd.read_excel(file_path)
     else:
         raise ValueError("Formato de arquivo não suportado.")
+
 
 def contar_curvas(dfs_curves: pd.DataFrame) -> dict[str, int]:
     """Retorna dicionário {id_route: número de curvas detectadas}."""

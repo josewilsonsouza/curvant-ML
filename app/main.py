@@ -1,6 +1,6 @@
 """
 CurvantML — Visualizador Interativo de Curvas
-Uso: streamlit run app.py
+Uso: streamlit run app/main.py
 """
 import io
 import contextlib
@@ -25,7 +25,8 @@ st.set_page_config(
 @st.cache_data(show_spinner="Rodando pipeline — primeira execução (~2 min)...")
 def carregar_pipeline():
     import os
-    from run_experiments import carregar_config, etapa_curvas, etapa_analise_conducao
+    from utils.config import carregar_config
+    from src.pipeline import etapa_curvas, etapa_analise_conducao
     from src.curve_detection import identificar_trechos_curvos
     from src.features import extrair_features
 
@@ -119,11 +120,12 @@ rota_sel = st.sidebar.selectbox("Trajeto", rotas_disp)
 sub_rota = subset[subset["id_route"] == rota_sel]
 curvas_disp = sorted(sub_rota["id_trecho_curvo"].unique())
 
-# Mostrar label ao lado de cada curva
+
 def fmt_curva(tc):
     row = sub_rota[sub_rota["id_trecho_curvo"] == tc].iloc[0]
     label = "🔴" if row["manobra"] == 1 else "🟢"
     return f"{label} Curva {tc}"
+
 
 curva_sel = st.sidebar.selectbox(
     "Curva",
@@ -190,7 +192,6 @@ c5.metric("Accel. centrípeta máx", f"{ctp_max:.2f} m/s²",
 c6.metric("Raio med. / DNIT", f"{raio_med:.0f}m / {dnit}")
 c7.metric("Duração da curva", f"{dur_curva:.0f}s")
 
-# Critérios
 st.markdown("**Critérios ativos durante a curva:**")
 ca, cb, cc_ = st.columns(3)
 for col, flag_col, nome in [
@@ -216,7 +217,6 @@ with col_map:
     lon_c = todos["lon"].mean()
     m = folium.Map(location=[lat_c, lon_c], zoom_start=17, tiles="CartoDB positron")
 
-    # Linha de contexto: todo o trajeto (cinza, fino)
     traj_completo = df_at[df_at["id_route"] == rota_sel][["lat", "lon"]].dropna()
     if len(traj_completo) > 1:
         folium.PolyLine(
@@ -225,7 +225,6 @@ with col_map:
             tooltip="Trajeto completo",
         ).add_to(m)
 
-    # Linha da pré-curva (azul)
     if len(pre_pts) > 1:
         folium.PolyLine(
             pre_pts[["lat", "lon"]].values.tolist(),
@@ -233,15 +232,11 @@ with col_map:
             tooltip="Pré-curva (janela de features)",
         ).add_to(m)
 
-    # Pontos pré-curva
     for _, row in pre_pts.iterrows():
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
-            radius=5,
-            color="#2166ac",
-            fill=True,
-            fill_color="#4393c3",
-            fill_opacity=0.8,
+            radius=5, color="#2166ac", fill=True,
+            fill_color="#4393c3", fill_opacity=0.8,
             tooltip=(
                 f"Pré-curva | t={row['time_sec']:.0f}s<br>"
                 f"Vel: {row['vehicle_speed']:.1f} km/h<br>"
@@ -249,14 +244,12 @@ with col_map:
             ),
         ).add_to(m)
 
-    # Linha da curva
     if len(curva_pts) > 1:
         folium.PolyLine(
             curva_pts[["lat", "lon"]].values.tolist(),
             color=cor, weight=4, opacity=0.8,
         ).add_to(m)
 
-    # Pontos da curva — coloridos por conducao de cada ponto
     for _, row in curva_pts.iterrows():
         c_pt = "#d73027" if row.get("conducao") == "Perigosa" else "#2b8a3e"
         criterios = []
@@ -274,15 +267,11 @@ with col_map:
             tip += f"<br>Critérios: {', '.join(criterios)}"
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
-            radius=7,
-            color=c_pt,
-            fill=True,
-            fill_color=c_pt,
-            fill_opacity=0.9,
+            radius=7, color=c_pt, fill=True,
+            fill_color=c_pt, fill_opacity=0.9,
             tooltip=folium.Tooltip(tip),
         ).add_to(m)
 
-    # Marcador de início da curva
     folium.Marker(
         location=[curva_pts.iloc[0]["lat"], curva_pts.iloc[0]["lon"]],
         icon=folium.Icon(color="red" if manobra_label == "Perigosa" else "green",
@@ -290,7 +279,6 @@ with col_map:
         tooltip="Início da curva",
     ).add_to(m)
 
-    # Legenda
     legend = """
     <div style="position:fixed;bottom:12px;left:12px;z-index:9999;
                 background:white;padding:8px 12px;border-radius:8px;
@@ -301,7 +289,6 @@ with col_map:
       <span style="color:#2b8a3e">●</span> Segura
     </div>"""
     m.get_root().html.add_child(folium.Element(legend))
-
     st_folium(m, width=None, height=480, returned_objects=[])
 
 # ── Gráficos Altair ───────────────────────────────────────────────────────────
@@ -319,7 +306,6 @@ with col_charts:
         COLOR_ENC = alt.Color("segmento:N", scale=COLOR_SCALE,
                               legend=alt.Legend(title="Segmento", orient="top"))
 
-        # Linha vertical em t=0 (início da curva)
         rule_df = pd.DataFrame({"t": [0], "label": ["início da curva"]})
         rule = (
             alt.Chart(rule_df)
@@ -329,8 +315,7 @@ with col_charts:
         rule_lbl = (
             alt.Chart(rule_df)
             .mark_text(align="left", dx=4, dy=-5, fontSize=10, color="black")
-            .encode(x="t:Q", text="label:N",
-                    y=alt.value(5))
+            .encode(x="t:Q", text="label:N", y=alt.value(5))
         )
 
         def linha(campo, titulo, unidade="", height=100):
@@ -350,10 +335,8 @@ with col_charts:
             )
             return (base + rule + rule_lbl).properties(height=height, title=titulo)
 
-        # Velocidade — com faixa de limite por DNIT
         ch_speed = linha("vehicle_speed", "Velocidade", "km/h", 120)
 
-        # Variação acumulada de velocidade (critério de aceleração anormal)
         ch_varvel = linha("var_vel_acum", "Variação vel. acumulada $\sum|\Delta v|$", "km/h", 90)
         limiar_accel = cfg["driving_analysis"]["var_velocidade_max"]
         limiar_df = pd.DataFrame({"y": [limiar_accel]})
@@ -371,10 +354,8 @@ with col_charts:
             height=90, title="Variação vel. acumulada $\sum|\Delta v|$ — critério aceleração anormal"
         )
 
-        # Aceleração lateral (accel_y)
         ch_accy = linha("accel_y", "Accel. lateral accel_y", "m/s²", 100)
 
-        # Aceleração centrípeta (v²/R) — zigue-zague
         ch_ctp = linha("ctp_accel", "Accel. centrípeta v²/R", "m/s²", 100)
         lim_ctp_df = pd.DataFrame(
             {"y": [cfg["driving_analysis"]["zigue_zague"]["limiar_accel_lateral"]]}
@@ -388,7 +369,6 @@ with col_charts:
             height=100, title="Aceleração centrípeta v²/R — gate do zigue-zague"
         )
 
-        # Variação de bearing |Δbearing| — zigue-zague
         ch_bear = linha("delta_bearing", "Variação de bearing |Δθ|", "°", 100)
         lim_bear_df = pd.DataFrame(
             {"y": [cfg["driving_analysis"]["zigue_zague"]["limiar_bearing"]]}
@@ -402,7 +382,6 @@ with col_charts:
             height=100, title="Variação de bearing |Δθ| — critério zigue-zague"
         )
 
-        # RPM
         ch_rpm = linha("engine_rpm", "RPM do motor", "rpm", 90)
 
         chart = alt.vconcat(
@@ -410,7 +389,7 @@ with col_charts:
             spacing=6,
         ).resolve_scale(color="shared")
 
-        st.altair_chart(chart, width='stretch')
+        st.altair_chart(chart, use_container_width=True)
 
 # ── Contexto do trajeto ───────────────────────────────────────────────────────
 
@@ -448,7 +427,7 @@ with col_dist:
         )
         .properties(title=f"Curvas em {rota_sel}", height=180)
     )
-    st.altair_chart(bar_dist, width='stretch')
+    st.altair_chart(bar_dist, use_container_width=True)
 
 with col_crit:
     crit_df = rota_feat[rota_feat["Classe"] == "Perigosa"]["Critério"].value_counts().reset_index()
@@ -464,7 +443,7 @@ with col_crit:
             )
             .properties(title="Critérios das manobras Perigosa", height=180)
         )
-        st.altair_chart(bar_crit, width='stretch')
+        st.altair_chart(bar_crit, use_container_width=True)
 
 # ── Dados brutos ──────────────────────────────────────────────────────────────
 
@@ -477,7 +456,7 @@ with st.expander("Dados brutos da curva selecionada"):
         "bearing", "delta_bearing",
     ]
     cols_ok = [c for c in cols_show if c in curva_pts.columns]
-    st.dataframe(curva_pts[cols_ok].round(3), width='stretch')
+    st.dataframe(curva_pts[cols_ok].round(3), use_container_width=True)
 
 with st.expander("Features extraídas desta curva"):
-    st.dataframe(feat_row.to_frame().T.round(3), width='stretch')
+    st.dataframe(feat_row.to_frame().T.round(3), use_container_width=True)

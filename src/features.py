@@ -1,6 +1,12 @@
 import numpy as np
 import pandas as pd
 
+from src.isl import classificar_isl
+
+_G = 9.81
+_MU_PADRAO = 0.6
+
+
 def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
     """Retorna estatísticas médias de variáveis-chave agrupadas por trajeto."""
     vars_interesse = {
@@ -99,6 +105,26 @@ def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame
         row['manobra_accel_perigo'] = 1 if curva['aceleracao_anormal'].mean() >= 0.5 else 0
         row['manobra_dir_perigosa'] = 1 if curva['direcao_perigosa'].mean() >= 0.5 else 0
         row['manobra_zigue_zague']  = 1 if curva['zigue_zague'].mean() >= 0.5 else 0
+
+        # ISL — Índice de Segurança Lateral
+        # Calculado apenas nos pontos dentro da curva onde ctp_accel está disponível.
+        # isl_alto é o target binário para o modelo preditivo (1 = alto risco lateral).
+        if 'ctp_accel' in curva.columns and 'curva' in curva.columns:
+            pts_curva = curva[curva['curva'] == True]
+        else:
+            pts_curva = curva
+        if not pts_curva.empty and 'ctp_accel' in pts_curva.columns:
+            isl_vals = pts_curva['ctp_accel'].abs() / (_G * _MU_PADRAO)
+            isl_max = float(isl_vals.max())
+            row['isl_mean']  = float(isl_vals.mean())
+            row['isl_max']   = isl_max
+            row['isl_class'] = classificar_isl(isl_max)
+            row['isl_alto']  = 1 if isl_max >= 0.8 else 0
+        else:
+            row['isl_mean']  = np.nan
+            row['isl_max']   = np.nan
+            row['isl_class'] = np.nan
+            row['isl_alto']  = np.nan
 
         dados_janela.append(row)
 

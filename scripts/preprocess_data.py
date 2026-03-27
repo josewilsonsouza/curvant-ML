@@ -5,29 +5,28 @@ Lê 'data/eletro_rjdf_serra.parquet', aplica limpeza de ruídos e salva
 'data/eletro_rjdf_serra_clean.parquet'.
 
 Uso:
-    python preprocess_data.py
-    python preprocess_data.py --max-gap 60 --accel-limite 4.0
+    python scripts/preprocess_data.py
+    python scripts/preprocess_data.py --max-gap 60 --accel-limite 4.0
 """
 
 import argparse
 
 import pandas as pd
-import yaml
 
 from src.preprocessing import preprocessar
+from utils.config import carregar_config
 
 
 def main(args: argparse.Namespace) -> None:
-    with open('config.yaml') as f:
-        cfg = yaml.safe_load(f)
+    cfg = carregar_config()
     pp = cfg.get('preprocessing', {})
 
-    accel_limite            = args.accel_limite            or pp.get('accel_limite',            5.0)
-    vel_max                 = args.vel_max                 or pp.get('vel_max',                 150.0)
-    vel_min_parado          = args.vel_min_parado          or pp.get('vel_min_parado',          2.0)
+    accel_limite             = args.accel_limite             or pp.get('accel_limite',             5.0)
+    vel_max                  = args.vel_max                  or pp.get('vel_max',                  150.0)
+    vel_min_parado           = args.vel_min_parado           or pp.get('vel_min_parado',           2.0)
     max_parados_consecutivos = args.max_parados_consecutivos or pp.get('max_parados_consecutivos', 3)
-    max_gap                 = args.max_gap                 or pp.get('max_gap',                 30.0)
-    min_pontos_segmento     = args.min_pontos_segmento     or pp.get('min_pontos_segmento',     10)
+    max_gap                  = args.max_gap                  or pp.get('max_gap',                  30.0)
+    min_pontos_segmento      = args.min_pontos_segmento      or pp.get('min_pontos_segmento',      10)
 
     print("Carregando dados...")
     df = pd.read_parquet('data/eletro_rjdf_serra.parquet')
@@ -66,10 +65,10 @@ def main(args: argparse.Namespace) -> None:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CurvantML — pré-processamento de dados OBD')
-    parser.add_argument('--accel-limite',             type=float, default=None, help='Clip do acelerometro em m/s² (default: 5.0)')
-    parser.add_argument('--vel-max',                  type=float, default=None, help='Velocidade maxima km/h (default: 150.0)')
-    parser.add_argument('--vel-min-parado',           type=float, default=None, help='Vel. minima para considerar parado km/h (default: 2.0)')
-    parser.add_argument('--max-parados-consecutivos', type=int,   default=None, help='Max pontos parados consecutivos mantidos (default: 3)')
-    parser.add_argument('--max-gap',                  type=float, default=None, help='Gap temporal maximo em segundos (default: 30.0)')
-    parser.add_argument('--min-pontos-segmento',      type=int,   default=None, help='Minimo de pontos por segmento (default: 10)')
+    parser.add_argument('--accel-limite',             type=float, default=None)
+    parser.add_argument('--vel-max',                  type=float, default=None)
+    parser.add_argument('--vel-min-parado',           type=float, default=None)
+    parser.add_argument('--max-parados-consecutivos', type=int,   default=None)
+    parser.add_argument('--max-gap',                  type=float, default=None)
+    parser.add_argument('--min-pontos-segmento',      type=int,   default=None)
     main(parser.parse_args())

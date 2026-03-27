@@ -27,6 +27,8 @@ from sklearn import svm
 _COLS_EXCLUIR = [
     'manobra', 'id_route', 'id_trecho_curvo', 'time_inicio', 'time_fim',
     'manobra_accel_perigo', 'manobra_dir_perigosa', 'manobra_zigue_zague',
+    # colunas ISL — excluídas das features dos modelos gerais; isl_alto é target do modelo ISL
+    'isl_mean', 'isl_max', 'isl_class', 'isl_alto',
 ]
 
 
@@ -409,3 +411,112 @@ def construir_lstm(janela_tempo: int, num_features: int):
     ])
     modelo.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
     return modelo
+
+
+# ── ISL — Índice de Segurança Lateral ────────────────────────────────────────
+
+# Colunas excluídas das features do modelo ISL (isl_alto é o target, não feature)
+_COLS_EXCLUIR_ISL = _COLS_EXCLUIR  # isl_mean/max/class/alto já estão em _COLS_EXCLUIR
+
+
+def treinar_modelo_isl(
+    df: pd.DataFrame,
+    plot_cm: bool = False,
+    random_state: int = 42,
+    test_size: float = 0.3,
+    cv_folds: int = 5,
+    pca_n_components=None,
+) -> pd.DataFrame:
+    """
+    Treina modelos clássicos para prever o ISL (Índice de Segurança Lateral)
+    antes de o veículo entrar na curva.
+
+    Target: ``isl_alto`` (1 = ISL ≥ 0.8 — alto risco lateral, 0 = baixo/médio)
+    Features: janela pré-curva — estatísticas de vehicle_speed, engine_rpm,
+              accel_x, accel_y (mean/std/median/max/min/slope/cv) +
+              contexto do trajeto.
+
+    Metodologia idêntica a ``aplicar_modelos_ml``:
+      split estratificado → SMOTE+Scaler por fold (ImbPipeline) → CV → teste final.
+
+    Retorna DataFrame com métricas por classificador e salva em
+    ``results/isl_resultados.tex``.
+    """
+    df_valid = df.dropna(subset=['isl_alto']).copy()
+    n_alto  = int(df_valid['isl_alto'].sum())
+    n_baixo = int((df_valid['isl_alto'] == 0).sum())
+    print(f"  ISL — amostras válidas: {len(df_valid)}  (alto: {n_alto} | baixo/médio: {n_baixo})")
+
+    feature_cols = [c for c in df_valid.columns if c not in _COLS_EXCLUIR_ISL]
+    df_clean = df_valid[feature_cols + ['isl_alto']].dropna()
+    X = df_clean[feature_cols].values
+    y = df_clean['isl_alto'].values
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    )
+
+    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+
+    modelos = {
+        'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
+        'SVM':                 svm.SVC(kernel='linear', random_state=random_state),
+        'Árvore de Decisão':   DecisionTreeClassifier(random_state=random_state),
+        'Floresta Aleatória':  RandomForestClassifier(random_state=random_state),
+        'Rede Neural (MLP)':   MLPClassifier(
+            activation='relu', solver='adam',
+            hidden_layer_sizes=(128, 64), max_iter=2000, random_state=random_state,
+        ),
+    }
+
+    linhas = []
+    for nome, clf in modelos.items():
+        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components)
+
+        cv_res = cross_validate(
+            pipe, X_train, y_train, cv=cv,
+            scoring={'acc': 'accuracy', 'f1': 'f1_weighted'},
+        )
+        cv_acc = cv_res['test_acc'].mean()
+        cv_f1  = cv_res['test_f1'].mean()
+
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+
+        acc  = accuracy_score(y_test, y_pred)
+        f1   = f1_score(y_test, y_pred, average='weighted')
+        prec = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+        rec  = recall_score(y_test, y_pred, average='weighted')
+
+        print(
+            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
+            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
+        )
+
+        if plot_cm:
+            cm = confusion_matrix(y_test, y_pred)
+            plt.figure(figsize=(6, 4))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Oranges',
+                        xticklabels=['Baixo/Médio', 'Alto'],
+                        yticklabels=['Baixo/Médio', 'Alto'])
+            plt.title(f'ISL — {nome}')
+            plt.ylabel('Real')
+            plt.xlabel('Prevista')
+            os.makedirs('results', exist_ok=True)
+            plt.savefig(f'results/isl_cm_{nome}.pdf', bbox_inches='tight')
+            plt.show()
+
+        linhas.append({
+            'Classificador':    nome,
+            'CV Acc (média)':   cv_acc,
+            'CV F1 (média)':    cv_f1,
+            'Acc (teste)':      acc,
+            'F1 (teste)':       f1,
+            'Precisão (teste)': prec,
+            'Recall (teste)':   rec,
+        })
+
+    df_res = pd.DataFrame(linhas)
+    os.makedirs('results', exist_ok=True)
+    df_res.to_latex('results/isl_resultados.tex', float_format='%.3f', index=False)
+    return df_res

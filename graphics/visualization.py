@@ -48,64 +48,37 @@ def plot_trajeto_com_curvatura(df, sigma=2, limite_raio=100, min_pontos=3,
         plt.savefig(f'{name_file}.pdf', bbox_inches='tight', dpi=300)
     plt.show()
 
+
 def plot_trip_folium(df, sigma=2, limite_raio=50, name_traj=None):
     """
-    Plota o trajeto completo com curvas detectadas e raios de curvatura em um mapa Folium.
-
-    Args:
-        df (pd.DataFrame): DataFrame contendo os dados do trajeto com 'lat' e 'lon'.
-        sigma (int): Parâmetro sigma para o filtro gaussiano.
-        limite_raio (int): Limite do raio de curvatura para plotagem das linhas de raio.
-        name_traj (str, optional): Nome do trajeto específico a ser plotado. Se None, usa o df completo.
-
-    Returns:
-        folium.Map: Objeto Folium Map com o trajeto plotado.
+    Plota o trajeto completo com curvas detectadas em um mapa Folium.
     """
-
     df_final = detectar_curvas(df, sigma=sigma, limite_raio=limite_raio, name_traj=name_traj)
 
     if df_final.empty or df_final[['lat', 'lon']].isnull().all().any() or len(df_final) < 2:
-        print(f"Não há dados suficientes ou válidos para plotar o trajeto {name_traj if name_traj else 'completo'}.")
+        print(f"Não há dados suficientes para plotar o trajeto {name_traj}.")
         return None
 
-    # Pegar o primeiro ponto válido para centrar o mapa inicialmente
     first_valid_point = df_final.dropna(subset=['lat', 'lon']).iloc[0]
-    map_center = [first_valid_point['lat'], first_valid_point['lon']]
-    m = folium.Map(location=map_center, zoom_start=15)
+    m = folium.Map(location=[first_valid_point['lat'], first_valid_point['lon']], zoom_start=15)
 
-    # Adicionar o trajeto completo como uma linha
-    folium.PolyLine(locations=df_final[['lat', 'lon']].values.tolist(), color='blue', weight=3, opacity=0.7,
-                    tooltip=f"Trajeto: {df_final['id_route'].iloc[0]}").add_to(m)
+    folium.PolyLine(
+        locations=df_final[['lat', 'lon']].values.tolist(),
+        color='blue', weight=3, opacity=0.7,
+        tooltip=f"Trajeto: {df_final['id_route'].iloc[0]}",
+    ).add_to(m)
 
-    # Filtrar pontos de curva detectados
-    curve_points = df_final[df_final['curva'] == True].dropna(subset=['lat', 'lon'])
-
-    for idx, row in curve_points.iterrows():
-        # Adicionar marcadores para pontos de curva
-        popup_text = f"Curva<br>Curvatura: {row['curvatura']:.2e}<br>Raio: {row['raio_curvatura']:.2f} m"
+    for _, row in df_final[df_final['curva']].dropna(subset=['lat', 'lon']).iterrows():
         folium.CircleMarker(
             location=[row['lat'], row['lon']],
-            radius=3,
-            color='red',
-            fill=True,
-            fill_color='red',
-            fill_opacity=0.7,
-            popup=popup_text
+            radius=3, color='red', fill=True, fill_color='red', fill_opacity=0.7,
+            popup=f"Curvatura: {row['curvatura']:.2e}<br>Raio: {row['raio_curvatura']:.2f} m",
         ).add_to(m)
 
-        # Adicionar linha indicando o raio de curvatura para raios pequenos
-        if row['raio_curvatura'] < limite_raio and not pd.isna(row['raio_curvatura']) and row['raio_curvatura'] != np.inf:
-            # Para Folium, é mais fácil simplesmente marcar o ponto da curva
-            # e, se quisermos visualizar o raio, teríamos que calcular o ponto final do vetor do raio.
-            # Isso exige a direção do movimento no ponto da curva.
-            # Para simplificar, focaremos nos CircleMarkers para a visualização inicial.
-            pass # Deixando a complexidade da linha do raio de fora por enquanto para manter a simplicidade.
-
-    # Ajustar o zoom para cobrir todo o trajeto
-    min_lat, max_lat = df_final['lat'].min(), df_final['lat'].max()
-    min_lon, max_lon = df_final['lon'].min(), df_final['lon'].max()
-    m.fit_bounds([[min_lat, min_lon], [max_lat, max_lon]])
-
+    m.fit_bounds([
+        [df_final['lat'].min(), df_final['lon'].min()],
+        [df_final['lat'].max(), df_final['lon'].max()],
+    ])
     return m
 
 
