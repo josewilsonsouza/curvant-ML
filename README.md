@@ -4,7 +4,7 @@ Framework de machine learning para **prever condução de risco em curvas**, mom
 
 ## Objetivo
 
-Classificar manobras como **Segura** ou **Perigosa** com base em features extraídas da janela de tempo imediatamente anterior à entrada em cada curva, permitindo alertas preventivos ao motorista.
+Classificar manobras como **Segura** ou **Perigosa** e prever o **Índice de Segurança Lateral (ISL)** com base em features extraídas da janela de tempo imediatamente anterior à entrada em cada curva, permitindo alertas preventivos ao motorista.
 
 ## Instalação
 
@@ -16,13 +16,15 @@ pip install -e ".[dev]"
 
 ```bash
 # 1. Limpeza dos dados brutos (executar uma vez)
-python preprocess_data.py
+python scripts/preprocess_data.py
 
 # 2. Pipeline completo de experimentos
-python run_experiments.py                    # modelos clássicos
-python run_experiments.py --plot             # + gráficos
-python run_experiments.py --mlp              # + MLP sklearn (GridSearchCV)
-python run_experiments.py --keras            # + Keras MLP / GRU / LSTM
+python scripts/run.py                    # modelos clássicos
+python scripts/run.py --plot             # + gráficos
+python scripts/run.py --isl              # + modelos preditivos de ISL
+python scripts/run.py --mlp              # + MLP sklearn (GridSearchCV)
+python scripts/run.py --keras            # + Keras MLP / GRU / LSTM
+python scripts/run.py --isl --plot --mlp --keras
 ```
 
 ## Pipeline
@@ -50,14 +52,37 @@ Análise de condução         janelas de 10 s rotuladas como Segura / Perigosa:
     │                         • zigue-zague
     ▼
 Extração de features        janela de 10 s PRÉ-curva:
-    │                         mean / std / median / max / min de
+    │                         mean / std / median / max / min / slope / cv de
     │                         vehicle_speed, engine_rpm, accel_x, accel_y
+    │                         + contexto do trajeto (n_curvas_antes, prop_perigosas_antes)
+    │                         + ISL da curva: isl_mean, isl_max, isl_class, isl_alto
     ▼
 Modelos de ML
-    ├── Clássicos: Regressão Logística, SVM, Árvore de Decisão,
-    │             Floresta Aleatória, MLP sklearn
-    └── Deep learning: MLP Keras, GRU, LSTM
+    ├── Condução perigosa (target: manobra)
+    │     Clássicos: Regressão Logística, SVM, Árvore de Decisão,
+    │                Floresta Aleatória, MLP sklearn
+    │     Deep learning: MLP Keras, GRU, LSTM
+    │
+    └── ISL — Índice de Segurança Lateral (target: isl_alto, flag --isl)
+          Prediz se a curva seguinte terá ISL ≥ 0.8 (alto risco lateral)
+          Mesmos classificadores clássicos, mesma metodologia anti-leakage
 ```
+
+## ISL — Índice de Segurança Lateral
+
+O ISL mede o quão próximo o veículo está do limite de aderência lateral ao percorrer uma curva:
+
+```
+ISL = v² / (R × g × μ)  =  ctp_accel / (g × μ)
+```
+
+| Classe | ISL | Interpretação |
+|---|---|---|
+| `baixo` | < 0.5 | Ampla margem de segurança |
+| `medio` | 0.5 – 0.8 | Atenção recomendada |
+| `alto` | ≥ 0.8 | Próximo ao limite de aderência |
+
+O modelo usa as features da janela pré-curva para prever se a **próxima curva** terá `isl_alto = 1`, possibilitando um alerta antes da entrada no trecho curvo.
 
 ## Dados
 
@@ -138,11 +163,38 @@ Todos os parâmetros do pipeline estão centralizados em `config.yaml`. Não é 
 
 Hiperparâmetros para MLP Keras, GRU e LSTM (camadas, dropout, epochs, batch size). Altere diretamente nesta seção sem modificar `src/models.py`.
 
+## Estrutura do projeto
+
+```
+src/
+  preprocessing.py    — limpeza de ruídos e divisão de trajetos
+  gps_filters.py      — filtros GPS (Kalman, Savitzky-Golay, mediana, etc.)
+  curve_detection.py  — curvatura de Frenet + classificação DNIT
+  driving_analysis.py — rotulagem de janelas Segura/Perigosa (Li et al., 2016)
+  features.py         — extração de features + cálculo de ISL por curva
+  isl.py              — Índice de Segurança Lateral (cálculo, classificação, resumo)
+  models.py           — modelos clássicos, MLP sklearn, Keras MLP/GRU/LSTM, modelo ISL
+  pipeline.py         — etapas reutilizáveis por scripts e app Streamlit
+scripts/
+  preprocess_data.py  — gera eletro_rjdf_serra_clean.parquet
+  run.py              — pipeline completo de experimentos (CLI)
+app/
+  main.py             — interface Streamlit
+utils/
+  config.py           — carregamento do config.yaml
+  data.py             — load_data(), contar_curvas()
+graphics/
+  visualization.py    — plots de trajetos e curvas de treinamento
+config.yaml           — todos os parâmetros e limiares
+```
+
 ## Arquivos gerados
 
 | Arquivo | Conteúdo |
 |---|---|
 | `data/eletro_rjdf_serra_clean.parquet` | Dataset limpo (gerado por `preprocess_data.py`) |
 | `results/tab_result.tex` | Tabela LaTeX com critérios de condução por classe |
-| `results/ml_resultados.tex` | Tabela LaTeX com métricas por modelo |
-| `results/matriz_confusao_<modelo>.pdf` | Matriz de confusão (com flag `--plot`) |
+| `results/ml_resultados.tex` | Tabela LaTeX com métricas dos modelos de condução |
+| `results/isl_resultados.tex` | Tabela LaTeX com métricas dos modelos ISL |
+| `results/matriz_confusao_<modelo>.pdf` | Matriz de confusão dos modelos de condução (com `--plot`) |
+| `results/isl_cm_<modelo>.pdf` | Matriz de confusão dos modelos ISL (com `--isl --plot`) |
