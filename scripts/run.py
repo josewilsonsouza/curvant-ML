@@ -22,6 +22,7 @@ from src.pipeline import (
     etapa_curvas, etapa_analise_conducao, etapa_features,
     etapa_ml_classico, etapa_mlp_sklearn, etapa_keras,
     etapa_isl_modelo,
+    etapa_accel_regressao, etapa_manobra_velocidade,
 )
 from utils.config import carregar_config
 
@@ -29,16 +30,24 @@ from utils.config import carregar_config
 def main(args: argparse.Namespace) -> None:
     cfg = carregar_config()
 
-    clean_path = 'data/eletro_rjdf_serra_clean.parquet'
-    raw_path   = 'data/eletro_rjdf_serra.parquet'
-    data_path  = clean_path if os.path.exists(clean_path) else raw_path
+    # Prioridade: dataset maior (novo) > dataset antigo > raw fallback
+    candidates = [
+        ('data/eletro_rjdf_serra_rjmgba_janeiro_clean.parquet', True),
+        ('data/eletro_rjdf_serra_clean.parquet',                True),
+        ('data/eletro_rjdf_serra_rjmgba_janeiro.parquet',       False),
+        ('data/eletro_rjdf_serra.parquet',                      False),
+    ]
+    data_path, is_clean = next(((p, c) for p, c in candidates if os.path.exists(p)), (None, False))
+    if data_path is None:
+        raise FileNotFoundError("Nenhum arquivo de dados encontrado em data/")
 
     print("[1/6] Carregando dados...")
-    if data_path == clean_path:
-        print("  Usando dados pré-processados (clean). Para regenerar: python scripts/preprocess_data.py")
+    if is_clean:
+        print(f"  Usando: {data_path}")
+        print("  Para regenerar: python scripts/preprocess_data.py --input <raw.parquet>")
     else:
-        print("  AVISO: dados limpos não encontrados. Execute 'python scripts/preprocess_data.py' primeiro.")
-        print(f"  Usando: {raw_path}")
+        print(f"  AVISO: dados limpos não encontrados. Execute 'python scripts/preprocess_data.py --input {data_path}' primeiro.")
+        print(f"  Usando raw: {data_path}")
 
     df = pd.read_parquet(data_path)
     print(f"  {len(df):,} registros | {df['id_route'].nunique()} trajetos")
@@ -47,9 +56,11 @@ def main(args: argparse.Namespace) -> None:
     dfs_curves = etapa_curvas(df, cfg)
 
     print("\n[3/6] Calculando aceleração centrípeta e absoluta...")
-    dfs_curves['ctp_accel'] = (
-        (dfs_curves['vehicle_speed'] / 3.6) ** 2 / dfs_curves['raio_curvatura']
-    )
+    # Clipar raio mínimo para evitar ISL → ∞ por ruído B-spline / GPS
+    # R < 5 m é fisicamente impossível para um veículo em movimento normal
+    R_MIN = cfg.get('curve_detection', {}).get('raio_min', 5.0)
+    raio_clipado = dfs_curves['raio_curvatura'].clip(lower=R_MIN)
+    dfs_curves['ctp_accel'] = (dfs_curves['vehicle_speed'] / 3.6) ** 2 / raio_clipado
     dfs_curves['abs_accel'] = np.sqrt(
         dfs_curves['accel_x'] ** 2 + dfs_curves['accel_y'] ** 2
     )
@@ -64,8 +75,12 @@ def main(args: argparse.Namespace) -> None:
     etapa_ml_classico(features_df, cfg, args.plot)
 
     if args.isl:
-        print("\n[Extra] ISL — Índice de Segurança Lateral...")
+        print("\n[Extra] ISL — classificação 3 classes (baixo/medio/alto)...")
         etapa_isl_modelo(features_df, cfg, args.plot)
+        print("\n[Extra] P1 — Regressão aceleração dentro da curva...")
+        etapa_accel_regressao(features_df, cfg, args.plot)
+        print("\n[Extra] P2 — Classificação por velocidade de entrada...")
+        etapa_manobra_velocidade(features_df, cfg, args.plot)
 
     if args.mlp:
         print("\n[Extra] MLP sklearn (GridSearchCV)...")

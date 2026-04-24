@@ -21,7 +21,8 @@ preprocessing:
 
 curve_detection:
   sigma: 2          # suavização gaussiana
-  limite_raio: 100   # metros — usado apenas em visualizações
+  limite_raio: 100   # metros — raio máximo para marcar curva=True
+  raio_min: 5.0      # metros — clip antes de ctp_accel; evita ISL → ∞ por ruído GPS
   # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010)
   # D = 1145.92 / R  (grau de curva por corda de 20 m)
   dnit:
@@ -35,16 +36,16 @@ driving_analysis:
   janela_tempo: 10            # segundos por janela de classificação
   var_velocidade_max: 20      # km/h — limite para aceleração/frenagem anormal
   velocidade_max_direcao: 30  # km/h — velocidade mínima para direção perigosa
-  angulo_max_direcao: 0.0     # 0.0 = desabilitado. O criterio GPS-bearing cria ciclo com gate DNIT:
-                              # dispara so dentro de curvas, tornando quase toda curva Perigosa.
-                              # Para reabilitar, use ~20-40 (Li et al.: 0.7 rad ≈ 40°)
+  angulo_max_direcao: 0.0     # não utilizado pelo critério atual (opção A usa accel_y)
+  limiar_accel_lateral: 3.0  # m/s² — |accel_y|_max mínimo para direcao_perigosa (opção A)
   zigue_zague:
     limiar_bearing: 15        # graus — mudança mínima de bearing
     limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
     min_mudancas: 3           # nº de eventos para detectar zigue-zague
 
 features:
-  janela_tempo: 10    # segundos antes do início da curva
+  janela_tempo: 10          # segundos antes do início da curva
+  janela_distancia: null    # metros antes da curva (P3); null = usar janela_tempo
   vars_sensor:
     - vehicle_speed
     - engine_rpm
@@ -61,6 +62,9 @@ ml:
   #   float 0–1   — manter N% da variância explicada  (ex.: 0.95)
   #   int ≥ 1     — número fixo de componentes        (ex.: 10)
   pca_n_components: null
+  # Remove curvas com isl_max acima deste percentil antes de treinar (ruído B-spline / GPS)
+  # null = sem filtro; 99 = remove o 1% mais extremo
+  isl_max_cap_percentil: 99
 
 neural_networks:
   mlp_sklearn:
@@ -72,7 +76,7 @@ neural_networks:
   mlp_keras:
     hidden_layers: [64, 64, 64]
     dropout: 0.3
-    epochs: 20
+    epochs: 150
     batch_size: 32
     validation_split: 0.2
   gru:

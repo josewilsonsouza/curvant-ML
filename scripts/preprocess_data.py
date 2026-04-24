@@ -1,20 +1,26 @@
 """
 CurvantML — Script de pré-processamento de dados
 
-Lê 'data/eletro_rjdf_serra.parquet', aplica limpeza de ruídos e salva
-'data/eletro_rjdf_serra_clean.parquet'.
-
 Uso:
     python scripts/preprocess_data.py
+    python scripts/preprocess_data.py --input data/eletro_rjdf_serra_rjmgba_janeiro.parquet
+    python scripts/preprocess_data.py --input data/eletro_rjdf_serra_rjmgba_janeiro.parquet --output data/full_clean.parquet
     python scripts/preprocess_data.py --max-gap 60 --accel-limite 4.0
 """
 
 import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pandas as pd
 
 from src.preprocessing import preprocessar
 from utils.config import carregar_config
+
+_DEFAULT_INPUT  = 'data/eletro_rjdf_serra.parquet'
+_DEFAULT_OUTPUT = 'data/eletro_rjdf_serra_clean.parquet'
 
 
 def main(args: argparse.Namespace) -> None:
@@ -28,9 +34,14 @@ def main(args: argparse.Namespace) -> None:
     max_gap                  = args.max_gap                  or pp.get('max_gap',                  30.0)
     min_pontos_segmento      = args.min_pontos_segmento      or pp.get('min_pontos_segmento',      10)
 
-    print("Carregando dados...")
-    df = pd.read_parquet('data/eletro_rjdf_serra.parquet')
+    in_path  = args.input  or _DEFAULT_INPUT
+    out_path = args.output or _derive_output(in_path)
+
+    print(f"Carregando {in_path} ...")
+    df = pd.read_parquet(in_path)
     print(f"  {len(df):,} pontos | {df['id_route'].nunique()} trajetos")
+    if 'loc_coleta' in df.columns:
+        print(f"  loc_coleta: {sorted(df['loc_coleta'].unique())}")
 
     print("\nAplicando limpeza de ruídos...")
     print(f"  accel_limite:             ±{accel_limite} m/s²")
@@ -58,13 +69,20 @@ def main(args: argparse.Namespace) -> None:
     print(f"  Novos segmentos (gaps):   +{stats['novos_segmentos']}")
     print(f"  Total de trajetos:        {stats['trajs_apos_split']}")
 
-    out_path = 'data/eletro_rjdf_serra_clean.parquet'
     df_clean.to_parquet(out_path, index=False)
     print(f"\nSalvo em: {out_path}")
 
 
+def _derive_output(in_path: str) -> str:
+    """Gera nome do output adicionando '_clean' antes de .parquet."""
+    base, ext = os.path.splitext(in_path)
+    return f"{base}_clean{ext}"
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='CurvantML — pré-processamento de dados OBD')
+    parser.add_argument('--input',  type=str, default=None, help=f'Arquivo parquet de entrada (padrão: {_DEFAULT_INPUT})')
+    parser.add_argument('--output', type=str, default=None, help='Arquivo parquet de saída (padrão: <input>_clean.parquet)')
     parser.add_argument('--accel-limite',             type=float, default=None)
     parser.add_argument('--vel-max',                  type=float, default=None)
     parser.add_argument('--vel-min-parado',           type=float, default=None)

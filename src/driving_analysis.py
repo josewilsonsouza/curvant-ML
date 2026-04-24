@@ -82,13 +82,15 @@ def detectar_conducao_perigosa(
     var_velocidade_max: float = 15.0,
     velocidade_max_direcao: float = 30.0,
     angulo_max_direcao: float = 40.0,
+    limiar_accel_lateral: float = 3.0,
 ) -> pd.DataFrame:
     """
     Classifica janelas de tempo como 'Perigosa' ou 'Segura' conforme Li et al. (2016).
 
     Critérios:
       1. Aceleração/desaceleração anormal  (var. velocidade > var_velocidade_max km/h)
-      2. Direção perigosa                  (curva > angulo_max_direcao rad acima de velocidade_max_direcao km/h)
+      2. Direção perigosa                  (|accel_y|_max > limiar_accel_lateral m/s²
+                                            em curvas com risco DNIT ≥ 2)
       3. Zigue-zague                       (≥3 mudanças bruscas de bearing + aceleração lateral)
     """
     resultados = []
@@ -115,30 +117,31 @@ def detectar_conducao_perigosa(
             risco_dnit = 3  # fallback conservador se coluna ausente
 
         # 2. Direção perigosa — suprimida em curvas suave/aberta (risco DNIT < 2)
-        lats = janela['lat'].tolist()
-        lons = janela['lon'].tolist()
-        # Variação de heading robusta a ruído GPS:
-        # Comparamos o bearing da primeira metade da janela com o bearing da janela toda.
-        # Usar bearings ponto-a-ponto (< 1m de distância) produz ruído de ±40–90° que
-        # domina o sinal real — daí a mediana de theta ≈ 5° mesmo em curvas reais.
-        n = len(lats)
-        if n >= 4:
-            mid = n // 2
-            b_inicio = calcular_bearing(lats[0], lons[0], lats[mid], lons[mid])
-            b_total  = calcular_bearing(lats[0], lons[0], lats[-1], lons[-1])
-            theta_direcao = float(abs((b_total - b_inicio + 180) % 360 - 180))
-        elif n >= 2:
-            theta_direcao = float(abs((
-                calcular_bearing(lats[0], lons[0], lats[-1], lons[-1]) + 180
-            ) % 360 - 180))
+        # theta_direcao: heading final menos heading inicial (corrigido — não mais same-origin)
+        if 'bearing' in janela.columns:
+            b_start = janela['bearing'].iloc[:3].mean()
+            b_end   = janela['bearing'].iloc[-3:].mean()
+            theta_direcao = float(abs((b_end - b_start + 180) % 360 - 180))
         else:
-            theta_direcao = 0.0
+            lats = janela['lat'].tolist()
+            lons = janela['lon'].tolist()
+            n = len(lats)
+            if n >= 4:
+                b_start = calcular_bearing(lats[0], lons[0], lats[min(2, n - 1)], lons[min(2, n - 1)])
+                b_end   = calcular_bearing(lats[max(0, n - 3)], lons[max(0, n - 3)], lats[-1], lons[-1])
+                theta_direcao = float(abs((b_end - b_start + 180) % 360 - 180))
+            elif n >= 2:
+                theta_direcao = float(abs((
+                    calcular_bearing(lats[0], lons[0], lats[-1], lons[-1]) + 180
+                ) % 360 - 180))
+            else:
+                theta_direcao = 0.0
+
+        # Critério opção A: aceleração lateral máxima supera limiar
+        accel_lateral_max = float(janela['accel_y'].abs().max())
         direcao_perigosa = (
             risco_dnit >= _RISCO_MIN_DIRECAO
-            and detectar_direcao_perigosa(
-                janela['vehicle_speed'].mean(), theta_direcao,
-                velocidade_max_direcao, angulo_max_direcao,
-            )
+            and accel_lateral_max > limiar_accel_lateral
         )
 
         # 3. Zigue-zague

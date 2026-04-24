@@ -3,8 +3,11 @@ import pandas as pd
 
 from src.isl import classificar_isl
 
-_G = 9.81
+_G         = 9.81
 _MU_PADRAO = 0.6
+
+# Encoding numérico da classe DNIT para feature prev_dnit_num
+_DNIT_NUM = {'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4}
 
 
 def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
@@ -29,23 +32,47 @@ def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame:
+def extrair_features(
+    data: pd.DataFrame,
+    janela_tempo: int = 10,
+    janela_distancia: float | None = None,
+) -> pd.DataFrame:
     """
-    Extrai features da janela de tempo imediatamente anterior a cada trecho de curva.
+    Extrai features da janela pré-curva e targets de comportamento dentro da curva.
 
-    Target: 'manobra' (1 = Perigosa, 0 = Segura) — maioria dos pontos da curva é Perigosa.
+    Janela pré-curva
+    ----------------
+    Por tempo  : ``janela_tempo`` segundos antes da curva (padrão).
+    Por distância: ``janela_distancia`` metros antes da curva (P3 — tem precedência).
 
-    Features extraídas
-    ------------------
-    - Estatísticas clássicas (mean/std/median/max/min) para cada variável sensor
-    - Tendência (slope via regressão linear, cv = std/mean) de cada variável sensor
-    - Contexto do trajeto: posição ordinal e histórico de curvas perigosas anteriores
+    Features (janela pré-curva)
+    ---------------------------
+    - mean / std / median / max / min / slope / cv de vehicle_speed, engine_rpm, accel_x, accel_y
+    - distance_car_curve, n_perigo_*_janela
+    - v_entry  : velocidade no primeiro ponto da curva (km/h)  [P4]
+    - janela_raio_min, janela_raio_mean, janela_raio_last : raio de curvatura na janela
+                                                            pré-curva (sem leakage)
 
-    Parâmetros
-    ----------
-    data         : DataFrame com colunas id_route, trecho_curvo, conducao, aceleracao_anormal,
-                   direcao_perigosa, zigue_zague, distancia_acumulada
-    janela_tempo : segundos antes do início da curva a considerar
+    Features de contexto (calculadas post-hoc via shift, sem leakage)
+    ------------------------------------------------------------------
+    - n_curvas_antes, n_perigosas_antes, prop_perigosas_antes
+    - prev_raio_min, prev_raio_mean, prev_dnit_num  : geometria da curva anterior  [P4]
+
+    Targets de classificação
+    ------------------------
+    - manobra              : maioria dos pontos da curva é Perigosa (Li et al.)
+    - manobra_velocidade   : 1 se v_entry > v_safe(R) — excesso de velocidade na entrada  [P2]
+
+    Targets de regressão
+    --------------------
+    - isl_max, isl_mean, isl_alto, isl_class          : ISL dentro da curva
+    - curve_accel_y_max, curve_accel_y_mean           : aceleração lateral |accel_y|  [P1]
+    - curve_abs_accel_max, curve_abs_accel_mean        : aceleração total               [P1]
+    - v_entry_ratio                                    : v_entry / v_safe(R)           [P2]
+
+    Colunas auxiliares (excluídas das features dos modelos)
+    -------------------------------------------------------
+    - v_safe_dnit, curve_raio_min, curve_raio_mean, curve_dnit_num
     """
     dados_janela = []
     df = data.copy()
@@ -58,26 +85,40 @@ def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame
         if len(curva) <= 2:
             continue
 
-        inicio_curva = curva['time_sec'].min()
-        janela = df[
-            (df['id_route'] == id_route_atual)
-            & (df['time_sec'] < inicio_curva)
-            & (df['time_sec'] >= inicio_curva - janela_tempo)
-        ].copy()
+        # ── Janela pré-curva (P3: distância tem precedência sobre tempo) ──────
+        if janela_distancia is not None:
+            dist_entrada = curva['distancia_acumulada'].min()
+            janela = df[
+                (df['id_route'] == id_route_atual)
+                & (df['distancia_acumulada'] < dist_entrada)
+                & (df['distancia_acumulada'] >= dist_entrada - janela_distancia)
+            ].copy()
+        else:
+            inicio_curva = curva['time_sec'].min()
+            janela = df[
+                (df['id_route'] == id_route_atual)
+                & (df['time_sec'] < inicio_curva)
+                & (df['time_sec'] >= inicio_curva - janela_tempo)
+            ].copy()
 
         if janela.empty:
             print(f'Janela vazia para {id_route_atual} e trecho {trecho_curvo}')
             continue
 
         row: dict = {
-            'time_inicio': janela['time_sec'].min(),
-            'time_fim': janela['time_sec'].max(),
-            'id_route': id_route_atual,
+            'time_inicio':    janela['time_sec'].min(),
+            'time_fim':       janela['time_sec'].max(),
+            'id_route':       id_route_atual,
             'id_trecho_curvo': trecho_curvo,
         }
 
-        # Tempo normalizado para a regressão linear (começa em 0)
         t = janela['time_sec'].values - janela['time_sec'].values[0]
+
+        # Metade tardia da janela (últimos 50% dos pontos) para capturar comportamento
+        # de aproximação à curva separado do comportamento inicial
+        mid = max(len(janela) // 2, 1)
+        janela_tarde = janela.iloc[mid:]
+        t_tarde = janela_tarde['time_sec'].values - janela_tarde['time_sec'].values[0] if len(janela_tarde) > 0 else np.array([0.0])
 
         for var in vars_sensor:
             vals = janela[var].values
@@ -86,45 +127,127 @@ def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame
             row[f'{var}_median'] = float(np.median(vals))
             row[f'{var}_max']    = float(np.max(vals))
             row[f'{var}_min']    = float(np.min(vals))
-            # Tendência: coeficiente angular da regressão linear sobre o tempo
-            # Positivo = crescente (acelerando/aumentando RPM); negativo = decrescente (freando)
-            row[f'{var}_slope'] = float(np.polyfit(t, vals, 1)[0]) if len(t) >= 2 else 0.0
-            # Dispersão relativa: quão errático estava o comportamento
-            row[f'{var}_cv'] = float(row[f'{var}_std'] / row[f'{var}_mean']) if row[f'{var}_mean'] != 0 else 0.0
+            row[f'{var}_slope']  = float(np.polyfit(t, vals, 1)[0]) if len(t) >= 2 else 0.0
+            row[f'{var}_cv']     = (
+                float(row[f'{var}_std'] / row[f'{var}_mean'])
+                if row[f'{var}_mean'] != 0 else 0.0
+            )
+            # Metade tardia: mean e slope (captura frenagem / aceleração perto da curva)
+            if len(janela_tarde) >= 2:
+                vals_t = janela_tarde[var].values
+                row[f'{var}_mean_tarde']  = float(np.mean(vals_t))
+                row[f'{var}_slope_tarde'] = float(np.polyfit(t_tarde, vals_t, 1)[0])
+            else:
+                row[f'{var}_mean_tarde']  = row[f'{var}_mean']
+                row[f'{var}_slope_tarde'] = row[f'{var}_slope']
 
-        row['distance_car_curve'] = (
+        # Jerk (taxa de variação da aceleração) — detecta reações bruscas do motorista
+        for var in ['accel_x', 'accel_y']:
+            vals = janela[var].values
+            dt_arr = np.diff(janela['time_sec'].values)
+            dt_arr = np.where(dt_arr > 0, dt_arr, 1e-3)
+            jerk = np.diff(vals) / dt_arr
+            row[f'jerk_{var[-1]}_max'] = float(np.abs(jerk).max()) if len(jerk) > 0 else 0.0
+            row[f'jerk_{var[-1]}_std'] = float(np.std(jerk))       if len(jerk) > 1 else 0.0
+
+        row['distance_car_curve']          = float(
             janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
         )
-        row['n_perigo_acc_anormal_janela'] = int(janela['aceleracao_anormal'].sum())
+        row['n_perigo_acc_anormal_janela']  = int(janela['aceleracao_anormal'].sum())
         row['n_perigo_dir_perigosa_janela'] = int(janela['direcao_perigosa'].sum())
-        row['n_perigo_zigue_zague_janela'] = int(janela['zigue_zague'].sum())
+        row['n_perigo_zigue_zague_janela']  = int(janela['zigue_zague'].sum())
 
-        # Threshold mean >= 0.5: a maioria dos pontos da curva deve ser Perigosa.
-        # "sum >= 2 pontos" era trivialmente atingido com amostragem 1 Hz (1 janela = ~10 pts).
+        # Raio de curvatura na janela pré-curva (estimativa da geometria da curva seguinte)
+        # Sem leakage: são pontos ANTES da curva; o B-spline suavizado já captura a curvatura
+        # na aproximação — raio_min captura a tangente mais próxima da curva.
+        if 'raio_curvatura' in janela.columns:
+            raios_janela = janela['raio_curvatura'].replace(0, np.nan).dropna()
+            if len(raios_janela) > 0:
+                row['janela_raio_min']  = float(raios_janela.min())
+                row['janela_raio_mean'] = float(raios_janela.mean())
+                # último ponto da janela = mais próximo da curva
+                last_valid = janela['raio_curvatura'].replace(0, np.nan).dropna()
+                row['janela_raio_last'] = float(last_valid.iloc[-1])
+            else:
+                row['janela_raio_min'] = row['janela_raio_mean'] = row['janela_raio_last'] = np.nan
+        else:
+            row['janela_raio_min'] = row['janela_raio_mean'] = row['janela_raio_last'] = np.nan
+
+        # ── Targets de classificação (Li et al.) ──────────────────────────────
         row['manobra']              = 1 if curva['conducao'].mean() >= 0.5 else 0
         row['manobra_accel_perigo'] = 1 if curva['aceleracao_anormal'].mean() >= 0.5 else 0
         row['manobra_dir_perigosa'] = 1 if curva['direcao_perigosa'].mean() >= 0.5 else 0
         row['manobra_zigue_zague']  = 1 if curva['zigue_zague'].mean() >= 0.5 else 0
 
-        # ISL — Índice de Segurança Lateral
-        # Calculado apenas nos pontos dentro da curva onde ctp_accel está disponível.
-        # isl_alto é o target binário para o modelo preditivo (1 = alto risco lateral).
-        if 'ctp_accel' in curva.columns and 'curva' in curva.columns:
-            pts_curva = curva[curva['curva'] == True]
-        else:
+        # ── Pontos dentro da curva ────────────────────────────────────────────
+        pts_curva = curva[curva['curva'] == True] if 'curva' in curva.columns else curva
+        if pts_curva.empty:
             pts_curva = curva
-        if not pts_curva.empty and 'ctp_accel' in pts_curva.columns:
+
+        # P2 — velocidade de entrada e velocidade segura para o raio detectado
+        curva_ord = pts_curva.sort_values('time_sec')
+        v_entry    = float(curva_ord['vehicle_speed'].iloc[0])
+        raio_entry = (
+            float(curva_ord['raio_curvatura'].iloc[0])
+            if 'raio_curvatura' in curva_ord.columns else np.nan
+        )
+        if not np.isnan(raio_entry) and raio_entry > 0:
+            v_safe = float(np.sqrt(raio_entry * _G * _MU_PADRAO) * 3.6)
+        else:
+            v_safe = np.nan
+
+        row['v_entry']            = v_entry
+        row['v_safe_dnit']        = round(v_safe, 2) if not np.isnan(v_safe) else np.nan
+        row['v_entry_ratio']      = round(v_entry / v_safe, 3) if (not np.isnan(v_safe) and v_safe > 0) else np.nan
+
+        # Quanto o motorista desacelerou ao se aproximar da curva
+        v_max_janela = float(janela['vehicle_speed'].max())
+        v_mean_janela = row['vehicle_speed_mean']
+        row['v_speed_drop']     = float(v_max_janela - v_entry)
+        row['v_speed_drop_pct'] = float(row['v_speed_drop'] / v_max_janela) if v_max_janela > 0 else 0.0
+        row['v_entry_vs_mean']  = float(v_entry / v_mean_janela) if v_mean_janela > 0 else 1.0
+        row['manobra_velocidade'] = (
+            int(v_entry > v_safe) if (not np.isnan(v_safe) and v_safe > 0) else np.nan
+        )
+
+        # ISL (calculado nos pontos curva=True)
+        if 'ctp_accel' in pts_curva.columns:
             isl_vals = pts_curva['ctp_accel'].abs() / (_G * _MU_PADRAO)
-            isl_max = float(isl_vals.max())
+            isl_max  = float(isl_vals.max())
             row['isl_mean']  = float(isl_vals.mean())
             row['isl_max']   = isl_max
             row['isl_class'] = classificar_isl(isl_max)
             row['isl_alto']  = 1 if isl_max >= 0.8 else 0
         else:
-            row['isl_mean']  = np.nan
-            row['isl_max']   = np.nan
-            row['isl_class'] = np.nan
-            row['isl_alto']  = np.nan
+            row['isl_mean'] = row['isl_max'] = row['isl_class'] = row['isl_alto'] = np.nan
+
+        # P1 — aceleração lateral e total dentro da curva (targets de regressão sem assumir μ)
+        if 'accel_y' in pts_curva.columns:
+            row['curve_accel_y_max']  = float(pts_curva['accel_y'].abs().max())
+            row['curve_accel_y_mean'] = float(pts_curva['accel_y'].abs().mean())
+        else:
+            row['curve_accel_y_max'] = row['curve_accel_y_mean'] = np.nan
+
+        if 'abs_accel' in pts_curva.columns:
+            row['curve_abs_accel_max']  = float(pts_curva['abs_accel'].max())
+            row['curve_abs_accel_mean'] = float(pts_curva['abs_accel'].mean())
+        else:
+            row['curve_abs_accel_max'] = row['curve_abs_accel_mean'] = np.nan
+
+        # P4 — geometria desta curva (armazenada para uso como contexto da curva anterior)
+        if 'raio_curvatura' in pts_curva.columns:
+            row['curve_raio_min']  = float(pts_curva['raio_curvatura'].min())
+            row['curve_raio_mean'] = float(pts_curva['raio_curvatura'].mean())
+        else:
+            row['curve_raio_min'] = row['curve_raio_mean'] = np.nan
+
+        if 'classe_dnit' in pts_curva.columns:
+            dnit_mode = pts_curva['classe_dnit'].mode()
+            row['curve_dnit_num'] = _DNIT_NUM.get(
+                dnit_mode.iloc[0] if not dnit_mode.empty else 'suave', 0
+            )
+        else:
+            row['curve_dnit_num'] = 0
 
         dados_janela.append(row)
 
@@ -134,16 +257,25 @@ def extrair_features(data: pd.DataFrame, janela_tempo: int = 10) -> pd.DataFrame
         .reset_index(drop=True)
     )
 
-    # Contexto do trajeto: posição ordinal e histórico de perigo acumulado no mesmo trajeto.
-    # Válido em tempo real — ao chegar na N-ésima curva o motorista já vivenciou as N-1 anteriores.
+    # ── Contexto do trajeto (calculado via shift — sem leakage) ───────────────
     partes = []
+    raio_min_global  = df_out['curve_raio_min'].median()
+    raio_mean_global = df_out['curve_raio_mean'].median()
+
     for _, grupo in df_out.groupby('id_route', sort=False):
         grupo = grupo.copy()
+
         grupo['n_curvas_antes']       = np.arange(len(grupo))
         grupo['n_perigosas_antes']    = grupo['manobra'].shift(1).fillna(0).cumsum().astype(int)
         grupo['prop_perigosas_antes'] = (
             grupo['n_perigosas_antes'] / grupo['n_curvas_antes'].replace(0, np.nan)
         ).fillna(0.0).round(3)
+
+        # P4 — raio e classe DNIT da curva anterior (shift garante ausência de leakage)
+        grupo['prev_raio_min']  = grupo['curve_raio_min'].shift(1).fillna(raio_min_global)
+        grupo['prev_raio_mean'] = grupo['curve_raio_mean'].shift(1).fillna(raio_mean_global)
+        grupo['prev_dnit_num']  = grupo['curve_dnit_num'].shift(1).fillna(0).astype(int)
+
         partes.append(grupo)
 
     return pd.concat(partes, ignore_index=True)

@@ -8,7 +8,6 @@ import pandas as pd
 from src.curve_detection import detectar_curvas, identificar_trechos_curvos
 from src.driving_analysis import detectar_conducao_perigosa
 from src.features import extrair_features
-from graphics.visualization import plotar_trajeto_conducao
 from utils.data import contar_curvas
 
 
@@ -45,6 +44,7 @@ def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> p
             var_velocidade_max=da['var_velocidade_max'],
             velocidade_max_direcao=da['velocidade_max_direcao'],
             angulo_max_direcao=da['angulo_max_direcao'],
+            limiar_accel_lateral=da.get('limiar_accel_lateral', 3.0),
         ))
 
     df_analysis = pd.concat(partes, ignore_index=True)
@@ -52,10 +52,6 @@ def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> p
     n_perigosa = (df_analysis['conducao'] == 'Perigosa').sum()
     n_segura   = (df_analysis['conducao'] == 'Segura').sum()
     print(f"  Janelas — Perigosa: {n_perigosa} | Segura: {n_segura}")
-
-    if plot:
-        for traj in df_analysis['id_route'].unique():
-            plotar_trajeto_conducao(df_analysis.query(f'id_route == "{traj}"'))
 
     return df_analysis
 
@@ -68,7 +64,11 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     )
 
     dfs_trechos = identificar_trechos_curvos(df_analysis)
-    features_df = extrair_features(dfs_trechos, janela_tempo=cfg['features']['janela_tempo'])
+    features_df = extrair_features(
+        dfs_trechos,
+        janela_tempo=cfg['features']['janela_tempo'],
+        janela_distancia=cfg['features'].get('janela_distancia'),
+    )
 
     n_perigosa = features_df['manobra'].sum()
     n_segura   = (features_df['manobra'] == 0).sum()
@@ -110,13 +110,66 @@ def etapa_ml_classico(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Da
     return resultados
 
 
+def _etapa_regressao(features_df: pd.DataFrame, cfg: dict, plot: bool, target: str) -> pd.DataFrame:
+    """Etapa genérica de regressão para qualquer target contínuo."""
+    from src.models import treinar_regressao
+
+    ml = cfg['ml']
+    resultados = treinar_regressao(
+        features_df,
+        target=target,
+        plot=plot,
+        random_state=ml['random_state'],
+        test_size=ml['test_size'],
+        cv_folds=ml['cv_folds'],
+        pca_n_components=ml.get('pca_n_components'),
+        cap_percentil=ml.get('isl_max_cap_percentil'),
+    )
+    print(resultados.to_string(index=False))
+    return resultados
+
+
+def etapa_accel_regressao(features_df, cfg, plot):
+    """P1 — Regressão aceleração lateral (curve_accel_y_max, sensor direto, sem assumir μ)."""
+    print("\n  Regressão — curve_accel_y_max")
+    r1 = _etapa_regressao(features_df, cfg, plot, target='curve_accel_y_max')
+    print("\n  Regressão — curve_abs_accel_max")
+    r2 = _etapa_regressao(features_df, cfg, plot, target='curve_abs_accel_max')
+    return r1, r2
+
+
+def etapa_manobra_velocidade(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
+    """P2 — Classificação por velocidade de entrada vs. velocidade segura para o raio."""
+    from src.models import aplicar_modelos_ml
+
+    df_v = features_df.dropna(subset=['manobra_velocidade']).copy()
+    df_v['manobra_velocidade'] = df_v['manobra_velocidade'].astype(int)
+
+    n_perigosa = df_v['manobra_velocidade'].sum()
+    n_segura   = (df_v['manobra_velocidade'] == 0).sum()
+    print(f"  v_entry label — Perigosa (v>v_safe): {n_perigosa} | Segura: {n_segura}")
+
+    ml = cfg['ml']
+    resultados = aplicar_modelos_ml(
+        df_v,
+        plot_cm=plot,
+        random_state=ml['random_state'],
+        test_size=ml['test_size'],
+        cv_folds=ml['cv_folds'],
+        pca_n_components=ml.get('pca_n_components'),
+        target='manobra_velocidade',
+        f1_average='macro',
+    )
+    print(resultados.to_string(index=False))
+    return resultados
+
+
 def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
     """
-    Etapa ISL: treina modelos para prever o Índice de Segurança Lateral
+    Etapa ISL: treina modelos para classificar o Índice de Segurança Lateral
     antes de o veículo entrar na curva.
 
-    Usa as features da janela pré-curva (já extraídas) para prever ``isl_alto``
-    (1 = ISL ≥ 0.8 — risco lateral alto).
+    Target: ``isl_class`` — 3 classes ordinais (baixo / medio / alto).
     """
     from src.models import treinar_modelo_isl
     from src.isl import resumo_isl
@@ -131,6 +184,7 @@ def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Dat
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
         pca_n_components=ml.get('pca_n_components'),
+        isl_max_cap_percentil=ml.get('isl_max_cap_percentil'),
     )
     print(resultados.to_string(index=False))
     return resultados
@@ -159,15 +213,25 @@ def etapa_keras(features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
 
     nn = cfg['neural_networks']
 
+    from tensorflow.keras.callbacks import EarlyStopping
+
+    early_stop = EarlyStopping(
+        monitor='val_accuracy', patience=10,
+        restore_best_weights=True, verbose=0,
+    )
+
     print("\n  MLP Keras...")
     mlp_cfg = nn['mlp_keras']
-    X_train, X_test, y_train, y_test = preparar_dados_keras(features_df)
+    X_train, X_val, X_test, y_train, y_val, y_test = preparar_dados_keras(
+        features_df, val_size=mlp_cfg['validation_split'],
+    )
     modelo = construir_mlp_keras(X_train.shape[1])
     history = modelo.fit(
         X_train, y_train,
         epochs=mlp_cfg['epochs'],
         batch_size=mlp_cfg['batch_size'],
-        validation_split=mlp_cfg['validation_split'],
+        validation_data=(X_val, y_val),
+        callbacks=[early_stop],
         verbose=0,
     )
     _, acc = modelo.evaluate(X_test, y_test, verbose=0)

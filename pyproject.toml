@@ -13,6 +13,7 @@ dependencies = [
     "pandas",
     "numpy",
     "scikit-learn",
+    "xgboost",
     "imbalanced-learn",
     "tensorflow",
     "pyyaml",

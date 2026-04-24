@@ -1,3 +1,7 @@
+import os
+
+import matplotlib
+matplotlib.use('Agg')
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -46,7 +50,7 @@ def plot_trajeto_com_curvatura(df, sigma=2, limite_raio=100, min_pontos=3,
 
     if save_fig and name_file:
         plt.savefig(f'{name_file}.pdf', bbox_inches='tight', dpi=300)
-    plt.show()
+    plt.close()
 
 
 def plot_trip_folium(df, sigma=2, limite_raio=50, name_traj=None):
@@ -111,7 +115,7 @@ def plotar_trajeto_conducao(df: pd.DataFrame, tipo: str = 'conducao') -> None:
     ax[0].grid(True)
     ax[1].legend()
     ax[1].grid(True)
-    plt.show()
+    plt.close()
 
 
 def plotar_curva_treinamento(history) -> None:
@@ -124,4 +128,6 @@ def plotar_curva_treinamento(history) -> None:
     plt.ylabel('Acurácia')
     plt.legend()
     plt.grid(True)
-    plt.show()
+    os.makedirs('results', exist_ok=True)
+    plt.savefig('results/curva_treinamento_keras.pdf', bbox_inches='tight')
+    plt.close()
