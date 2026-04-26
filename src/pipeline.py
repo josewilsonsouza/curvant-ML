@@ -3,10 +3,13 @@ CurvantML — Etapas do pipeline de experimentos.
 Funções reutilizáveis por scripts CLI e pelo app Streamlit.
 """
 
+import os
+
+import numpy as np
 import pandas as pd
 
+from src.characterization import caracterizar_conducao
 from src.curve_detection import detectar_curvas, identificar_trechos_curvos
-from src.driving_analysis import detectar_conducao_perigosa
 from src.features import extrair_features
 from utils.data import contar_curvas
 
@@ -32,36 +35,48 @@ def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 
 def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
-    """Etapa 4: classifica janelas de 10s como Segura/Perigosa."""
+    """Etapa 4: classifica janelas de 10s com a taxonomia explícita de risco."""
     da = cfg['driving_analysis']
 
     partes = []
     for traj in dfs_curves['id_route'].unique():
         dt = dfs_curves.query(f'id_route == "{traj}"')
-        partes.append(detectar_conducao_perigosa(
+        resultado = caracterizar_conducao(
             dt,
             janela_tempo=da['janela_tempo'],
             var_velocidade_max=da['var_velocidade_max'],
-            velocidade_max_direcao=da['velocidade_max_direcao'],
-            angulo_max_direcao=da['angulo_max_direcao'],
             limiar_accel_lateral=da.get('limiar_accel_lateral', 3.0),
-        ))
+            zz_limiar_bearing=da.get('zigue_zague', {}).get('limiar_bearing', 15.0),
+            zz_limiar_accel=da.get('zigue_zague', {}).get('limiar_accel_lateral', 0.3),
+            zz_min_mudancas=da.get('zigue_zague', {}).get('min_mudancas', 3),
+        )
+        if not resultado.empty:
+            partes.append(resultado)
 
     df_analysis = pd.concat(partes, ignore_index=True)
 
-    n_perigosa = (df_analysis['conducao'] == 'Perigosa').sum()
-    n_segura   = (df_analysis['conducao'] == 'Segura').sum()
+    n_perigosa = df_analysis['manobra_combinado'].sum()
+    n_segura   = (~df_analysis['manobra_combinado']).sum()
+    n_accel    = df_analysis['manobra_accel'].sum()
+    n_lateral  = df_analysis['manobra_lateral'].sum()
+    n_zz       = df_analysis['manobra_ziguezague'].sum()
     print(f"  Janelas — Perigosa: {n_perigosa} | Segura: {n_segura}")
+    print(f"  Critérios — Accel: {n_accel} | Lateral: {n_lateral} | ZZ: {n_zz}")
 
     return df_analysis
 
 
-def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """Etapas 5-6: identifica trechos curvos e extrai features estatísticas."""
+def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') -> pd.DataFrame:
+    """
+    Etapas 5-6: extrai features e alvos por curva.
+
+    modo='modo1' — inclui F4 (geometria da curva seguinte)
+    modo='modo2' — zera F4 e modo_rota_conhecida=0
+    """
     df_analysis = df_analysis.copy()
-    df_analysis[['aceleracao_anormal', 'direcao_perigosa', 'zigue_zague']] = (
-        df_analysis[['aceleracao_anormal', 'direcao_perigosa', 'zigue_zague']].astype(int)
-    )
+    for col in ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']:
+        if col in df_analysis.columns:
+            df_analysis[col] = df_analysis[col].astype(int)
 
     dfs_trechos = identificar_trechos_curvos(df_analysis)
     features_df = extrair_features(
@@ -70,21 +85,27 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         janela_distancia=cfg['features'].get('janela_distancia'),
     )
 
-    n_perigosa = features_df['manobra'].sum()
-    n_segura   = (features_df['manobra'] == 0).sum()
+    if modo == 'modo2':
+        for col in ['f4_raio_min', 'f4_raio_mean', 'f4_dnit_num']:
+            if col in features_df.columns:
+                features_df[col] = np.nan
+        features_df['modo_rota_conhecida'] = 0
+
+    n_perigosa = features_df['manobra_combinado_curva'].sum()
+    n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
     print(f"  {len(features_df)} amostras — Perigosa: {n_perigosa} | Segura: {n_segura}")
 
     crit_cols = {
-        'manobra_accel_perigo': 'Aceleração anormal',
-        'manobra_dir_perigosa': 'Direção perigosa',
-        'manobra_zigue_zague':  'Zigue-zague',
+        'manobra_accel_curva':      'Aceleração anormal',
+        'manobra_lateral_curva':    'Direção perigosa',
+        'manobra_ziguezague_curva': 'Zigue-zague',
     }
-    tab = features_df.groupby('manobra')[list(crit_cols.keys())].sum().rename(columns=crit_cols)
+    tab = features_df.groupby('manobra_combinado_curva')[list(crit_cols.keys())].sum().rename(columns=crit_cols)
     tab.index = tab.index.map({0: 'Segura', 1: 'Perigosa'})
-    tab.insert(0, 'Condução', features_df.groupby('manobra').size().rename({0: 'Segura', 1: 'Perigosa'}))
+    tab.insert(0, 'Condução', features_df.groupby('manobra_combinado_curva').size().rename({0: 'Segura', 1: 'Perigosa'}))
     tab.index.name = 'Manobra'
-
     print(tab.to_string())
+    os.makedirs('results', exist_ok=True)
     tab.to_latex('results/tab_result.tex', index=True)
 
     return features_df
@@ -105,6 +126,25 @@ def etapa_ml_classico(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Da
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
         pca_n_components=pca,
+    )
+    print(resultados.to_string(index=False))
+    return resultados
+
+
+def etapa_ml_otimizado(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
+    """Treina modelos clássicos com Optuna (XGB + RF) e split por rota."""
+    from src.models import aplicar_modelos_ml_otimizados
+
+    ml  = cfg['ml']
+    opt = cfg.get('optuna', {})
+    resultados = aplicar_modelos_ml_otimizados(
+        features_df,
+        plot_cm=plot,
+        random_state=ml['random_state'],
+        test_size=ml['test_size'],
+        cv_folds=ml['cv_folds'],
+        n_trials_xgb=opt.get('n_trials', 50),
+        n_trials_rf=opt.get('n_trials', 30),
     )
     print(resultados.to_string(index=False))
     return resultados
@@ -188,6 +228,23 @@ def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Dat
     )
     print(resultados.to_string(index=False))
     return resultados
+
+
+def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
+    """Treina o MLP multi-tarefa PyTorch com split por id_route."""
+    from src.models_pytorch import treinar_multitask_mlp
+
+    nn_cfg = cfg.get('neural_networks', {})
+    pt_cfg = nn_cfg.get('multitask_mlp', {})
+
+    treinar_multitask_mlp(
+        features_df,
+        epochs=pt_cfg.get('epochs', 100),
+        batch_size=pt_cfg.get('batch_size', 32),
+        lr=pt_cfg.get('lr', 1e-3),
+        test_size=cfg['ml']['test_size'],
+        random_state=cfg['ml']['random_state'],
+    )
 
 
 def etapa_mlp_sklearn(features_df: pd.DataFrame, cfg: dict) -> None:

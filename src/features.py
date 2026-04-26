@@ -79,7 +79,7 @@ def extrair_features(
     df['conducao'] = df['conducao'].map({'Perigosa': 1, 'Segura': 0})
     df = df.sort_values(by=['id_route', 'time_sec'])
 
-    vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y']
+    vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y', 'accel_z']
 
     for (id_route_atual, trecho_curvo), curva in df.groupby(['id_route', 'trecho_curvo']):
         if len(curva) <= 2:
@@ -142,7 +142,7 @@ def extrair_features(
                 row[f'{var}_slope_tarde'] = row[f'{var}_slope']
 
         # Jerk (taxa de variação da aceleração) — detecta reações bruscas do motorista
-        for var in ['accel_x', 'accel_y']:
+        for var in ['accel_x', 'accel_y', 'accel_z']:
             vals = janela[var].values
             dt_arr = np.diff(janela['time_sec'].values)
             dt_arr = np.where(dt_arr > 0, dt_arr, 1e-3)
@@ -153,9 +153,9 @@ def extrair_features(
         row['distance_car_curve']          = float(
             janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
         )
-        row['n_perigo_acc_anormal_janela']  = int(janela['aceleracao_anormal'].sum())
-        row['n_perigo_dir_perigosa_janela'] = int(janela['direcao_perigosa'].sum())
-        row['n_perigo_zigue_zague_janela']  = int(janela['zigue_zague'].sum())
+        row['n_perigo_accel_janela']   = int(janela['manobra_accel'].sum())
+        row['n_perigo_lateral_janela'] = int(janela['manobra_lateral'].sum())
+        row['n_perigo_zz_janela']      = int(janela['manobra_ziguezague'].sum())
 
         # Raio de curvatura na janela pré-curva (estimativa da geometria da curva seguinte)
         # Sem leakage: são pontos ANTES da curva; o B-spline suavizado já captura a curvatura
@@ -174,10 +174,11 @@ def extrair_features(
             row['janela_raio_min'] = row['janela_raio_mean'] = row['janela_raio_last'] = np.nan
 
         # ── Targets de classificação (Li et al.) ──────────────────────────────
-        row['manobra']              = 1 if curva['conducao'].mean() >= 0.5 else 0
-        row['manobra_accel_perigo'] = 1 if curva['aceleracao_anormal'].mean() >= 0.5 else 0
-        row['manobra_dir_perigosa'] = 1 if curva['direcao_perigosa'].mean() >= 0.5 else 0
-        row['manobra_zigue_zague']  = 1 if curva['zigue_zague'].mean() >= 0.5 else 0
+        row['manobra_accel_curva']       = 1 if curva['manobra_accel'].mean() >= 0.5 else 0
+        row['manobra_lateral_curva']     = 1 if curva['manobra_lateral'].mean() >= 0.5 else 0
+        row['manobra_ziguezague_curva']  = 1 if curva['manobra_ziguezague'].mean() >= 0.5 else 0
+        row['manobra_combinado_curva']   = 1 if curva['manobra_combinado'].mean() >= 0.5 else 0
+        row['manobra']                   = row['manobra_combinado_curva']  # retrocompat
 
         # ── Pontos dentro da curva ────────────────────────────────────────────
         pts_curva = curva[curva['curva'] == True] if 'curva' in curva.columns else curva
@@ -206,9 +207,16 @@ def extrair_features(
         row['v_speed_drop']     = float(v_max_janela - v_entry)
         row['v_speed_drop_pct'] = float(row['v_speed_drop'] / v_max_janela) if v_max_janela > 0 else 0.0
         row['v_entry_vs_mean']  = float(v_entry / v_mean_janela) if v_mean_janela > 0 else 1.0
+        # Proxy físico de ISL na entrada: v²/R_estimado (feature F3)
+        _raio_est = row.get('janela_raio_min', np.nan)
+        if pd.notna(_raio_est) and _raio_est > 0:
+            row['v_entry_sq_over_raio_est'] = float((v_entry / 3.6) ** 2 / _raio_est)
+        else:
+            row['v_entry_sq_over_raio_est'] = np.nan
         row['manobra_velocidade'] = (
             int(v_entry > v_safe) if (not np.isnan(v_safe) and v_safe > 0) else np.nan
         )
+        row['v_excess'] = row['manobra_velocidade']  # alias explícito da taxonomia
 
         # ISL (calculado nos pontos curva=True)
         if 'ctp_accel' in pts_curva.columns:
@@ -248,6 +256,14 @@ def extrair_features(
             )
         else:
             row['curve_dnit_num'] = 0
+
+        # F4 — geometria real da curva seguinte (Modo 1).
+        # Cópias de curve_raio_* com nome distinto para não conflitar com _COLS_EXCLUIR.
+        # O pipeline define modo_rota_conhecida=0 e zera f4_* para Modo 2.
+        row['f4_raio_min']  = row.get('curve_raio_min', np.nan)
+        row['f4_raio_mean'] = row.get('curve_raio_mean', np.nan)
+        row['f4_dnit_num']  = row.get('curve_dnit_num', 0)
+        row['modo_rota_conhecida'] = 1  # default Modo 1; pipeline sobrescreve para Modo 2
 
         dados_janela.append(row)
 

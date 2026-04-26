@@ -2,11 +2,13 @@
 CurvantML — Pipeline de Experimentos
 
 Uso:
-    python scripts/run_experiments.py                    # apenas modelos clássicos
-    python scripts/run_experiments.py --plot             # gera plots
-    python scripts/run_experiments.py --mlp              # + MLP sklearn (GridSearchCV)
-    python scripts/run_experiments.py --keras            # + redes neurais Keras (MLP, GRU, LSTM)
-    python scripts/run_experiments.py --plot --mlp --keras
+    python scripts/run.py                            # modelos clássicos (modo1)
+    python scripts/run.py --plot                     # gera plots
+    python scripts/run.py --isl                      # + ISL 3-class + regressões
+    python scripts/run.py --mlp                      # + MLP sklearn (GridSearchCV)
+    python scripts/run.py --optuna                   # + Optuna para XGBoost e RandomForest
+    python scripts/run.py --pytorch                  # + MLP multi-tarefa PyTorch
+    python scripts/run.py --modo modo2               # Modo 2 (sem geometria da curva seguinte)
 """
 
 import argparse
@@ -20,9 +22,8 @@ import pandas as pd
 
 from src.pipeline import (
     etapa_curvas, etapa_analise_conducao, etapa_features,
-    etapa_ml_classico, etapa_mlp_sklearn, etapa_keras,
-    etapa_isl_modelo,
-    etapa_accel_regressao, etapa_manobra_velocidade,
+    etapa_ml_classico, etapa_ml_otimizado, etapa_mlp_sklearn,
+    etapa_isl_modelo, etapa_accel_regressao,
 )
 from utils.config import carregar_config
 
@@ -69,26 +70,29 @@ def main(args: argparse.Namespace) -> None:
     df_analysis = etapa_analise_conducao(dfs_curves, cfg, args.plot)
 
     print("\n[5/6] Identificando trechos curvos e extraindo features...")
-    features_df = etapa_features(df_analysis, cfg)
+    features_df = etapa_features(df_analysis, cfg, modo=args.modo)
+    print(f"  Modo: {args.modo}")
 
     print("\n[6/6] Modelos clássicos de ML...")
-    etapa_ml_classico(features_df, cfg, args.plot)
+    if args.optuna:
+        etapa_ml_otimizado(features_df, cfg, args.plot)
+    else:
+        etapa_ml_classico(features_df, cfg, args.plot)
 
     if args.isl:
         print("\n[Extra] ISL — classificação 3 classes (baixo/medio/alto)...")
         etapa_isl_modelo(features_df, cfg, args.plot)
         print("\n[Extra] P1 — Regressão aceleração dentro da curva...")
         etapa_accel_regressao(features_df, cfg, args.plot)
-        print("\n[Extra] P2 — Classificação por velocidade de entrada...")
-        etapa_manobra_velocidade(features_df, cfg, args.plot)
 
     if args.mlp:
         print("\n[Extra] MLP sklearn (GridSearchCV)...")
         etapa_mlp_sklearn(features_df, cfg)
 
-    if args.keras:
-        print("\n[Extra] Redes neurais Keras...")
-        etapa_keras(features_df, cfg, args.plot)
+    if args.pytorch:
+        print("\n[Extra] MLP multi-tarefa PyTorch...")
+        from src.pipeline import etapa_pytorch
+        etapa_pytorch(features_df, cfg)
 
     print("\nConcluído.")
 
@@ -97,8 +101,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='CurvantML — pipeline completo de experimentos'
     )
-    parser.add_argument('--plot',  action='store_true', help='Gerar plots durante a execução')
-    parser.add_argument('--isl',   action='store_true', help='Treinar modelos preditivos de ISL')
-    parser.add_argument('--mlp',   action='store_true', help='Treinar MLP sklearn com GridSearchCV')
-    parser.add_argument('--keras', action='store_true', help='Treinar redes neurais Keras (MLP, GRU, LSTM)')
+    parser.add_argument('--modo',    choices=['modo1', 'modo2'], default='modo1',
+                        help='Modo 1: features com geometria da curva; Modo 2: só OBD+GPS (default: modo1)')
+    parser.add_argument('--plot',    action='store_true', help='Gerar plots durante a execução')
+    parser.add_argument('--isl',     action='store_true', help='Treinar modelos preditivos de ISL')
+    parser.add_argument('--mlp',     action='store_true', help='Treinar MLP sklearn com GridSearchCV')
+    parser.add_argument('--optuna',  action='store_true', help='Usar Optuna para XGBoost e RandomForest')
+    parser.add_argument('--pytorch', action='store_true', help='Treinar MLP multi-tarefa PyTorch')
     main(parser.parse_args())

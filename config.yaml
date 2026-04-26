@@ -21,7 +21,7 @@ preprocessing:
 
 curve_detection:
   sigma: 2          # suavização gaussiana
-  limite_raio: 100   # metros — raio máximo para marcar curva=True
+  limite_raio: 150   # metros — raio máximo para marcar curva=True
   raio_min: 5.0      # metros — clip antes de ctp_accel; evita ISL → ∞ por ruído GPS
   # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010)
   # D = 1145.92 / R  (grau de curva por corda de 20 m)
@@ -33,18 +33,18 @@ curve_detection:
     # suave: R > 500 m
 
 driving_analysis:
-  janela_tempo: 10            # segundos por janela de classificação
+  janela_tempo: 15            # segundos por janela de classificação (era 10)
   var_velocidade_max: 20      # km/h — limite para aceleração/frenagem anormal
   velocidade_max_direcao: 30  # km/h — velocidade mínima para direção perigosa
   angulo_max_direcao: 0.0     # não utilizado pelo critério atual (opção A usa accel_y)
-  limiar_accel_lateral: 3.0  # m/s² — |accel_y|_max mínimo para direcao_perigosa (opção A)
+  limiar_accel_lateral: 2.0  # m/s² — |accel_y|_max mínimo para direcao_perigosa (era 3.0)
   zigue_zague:
     limiar_bearing: 15        # graus — mudança mínima de bearing
     limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
     min_mudancas: 3           # nº de eventos para detectar zigue-zague
 
 features:
-  janela_tempo: 10          # segundos antes do início da curva
+  janela_tempo: 15          # segundos antes do início da curva (era 10)
   janela_distancia: null    # metros antes da curva (P3); null = usar janela_tempo
   vars_sensor:
     - vehicle_speed
@@ -71,7 +71,7 @@ neural_networks:
     hidden_layer_sizes: [128, 64]
     activation: relu
     solver: adam
-    alpha: 0.0001
+    alpha: 0.001
     max_iter: 2000
   mlp_keras:
     hidden_layers: [64, 64, 64]
@@ -92,3 +92,11 @@ neural_networks:
     epochs: 20
     batch_size: 32
     validation_split: 0.2
+  multitask_mlp:
+    epochs: 200
+    batch_size: 32
+    lr: 0.0005
+
+optuna:
+  n_trials: 50        # trials por modelo/target
+  timeout: 300        # segundos máximos por otimização

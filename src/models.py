@@ -1,4 +1,5 @@
 import os
+import re
 
 import matplotlib
 matplotlib.use('Agg')
@@ -19,7 +20,7 @@ from sklearn.metrics import (
     mean_absolute_error, mean_squared_error, r2_score,
 )
 from sklearn.model_selection import (
-    GridSearchCV, KFold, StratifiedKFold,
+    GroupKFold, GridSearchCV, KFold, StratifiedKFold,
     cross_validate, train_test_split,
 )
 from sklearn.neural_network import MLPClassifier, MLPRegressor
@@ -30,22 +31,72 @@ from sklearn import svm
 from xgboost import XGBClassifier, XGBRegressor
 
 _COLS_EXCLUIR = [
-    # identificadores e metadados
-    'manobra', 'id_route', 'id_trecho_curvo', 'time_inicio', 'time_fim',
-    'manobra_accel_perigo', 'manobra_dir_perigosa', 'manobra_zigue_zague',
-    # ISL — targets; isl_alto/max/mean/class são calculados dentro da curva
-    'isl_mean', 'isl_max', 'isl_class', 'isl_alto',
-    # P1 — targets de aceleração dentro da curva
+    # identificadores
+    'id_route', 'id_trecho_curvo', 'time_inicio', 'time_fim',
+    # targets de caracterização por curva
+    'manobra', 'manobra_combinado_curva',
+    'manobra_accel_curva', 'manobra_lateral_curva', 'manobra_ziguezague_curva',
+    # targets ISL (calculados dentro da curva — leakage)
+    'isl_value', 'isl_mean', 'isl_max', 'isl_class', 'isl_alto',
+    # targets de aceleração dentro da curva
     'curve_accel_y_max', 'curve_accel_y_mean',
     'curve_abs_accel_max', 'curve_abs_accel_mean',
-    # P2 — labels e derivados da geometria da curva atual (leakage)
-    'manobra_velocidade', 'v_safe_dnit', 'v_entry_ratio',
-    # P4 — geometria da curva atual (leakage; prev_* são features legítimas)
+    # targets de velocidade
+    'v_excess', 'manobra_velocidade', 'v_safe_dnit', 'v_entry_ratio',
+    # geometria bruta da curva atual (leakage; usar f4_* em Modo 1)
     'curve_raio_min', 'curve_raio_mean', 'curve_dnit_num',
 ]
 
 
 # ── Utilitários internos ──────────────────────────────────────────────────────
+
+def _base_route(id_route: str) -> str:
+    """Remove sufixo _p<N> gerado pelo splittar_por_gaps, retornando o ID original da gravação."""
+    return re.sub(r'_p\d+$', '', id_route)
+
+
+def _split_por_rota(
+    df: pd.DataFrame,
+    target: str,
+    test_size: float = 0.3,
+    random_state: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Split por id_route (sem amostras da mesma rota em treino e teste).
+    Retorna (X_train, X_test, y_train, y_test, groups_train).
+    groups_train é usado pelo GroupKFold.
+    """
+    id_routes  = df['id_route'].astype(str)
+    base_rotas = list({_base_route(r) for r in id_routes})
+    train_base, test_base = train_test_split(
+        base_rotas, test_size=test_size, random_state=random_state
+    )
+    train_base_set = set(train_base)
+    test_base_set  = set(test_base)
+
+    feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
+    cols = feature_cols + [target, 'id_route']
+
+    df_train = (
+        df[id_routes.map(_base_route).isin(train_base_set)][cols]
+        .dropna(subset=[target])
+    )
+    df_test = (
+        df[id_routes.map(_base_route).isin(test_base_set)][cols]
+        .dropna(subset=[target])
+    )
+
+    # NaN features (e.g. F4 in Mode 2) are filled with 0 before the scaler
+    X_train = df_train[feature_cols].fillna(0.0).values
+    y_train = df_train[target].values
+    # GroupKFold groups on the original recording ID (strips _p<N>) so all
+    # sub-trajectories from the same file stay in the same fold
+    groups_train = np.array([_base_route(r) for r in df_train['id_route'].astype(str)])
+    X_test  = df_test[feature_cols].fillna(0.0).values
+    y_test  = df_test[target].values
+
+    return X_train, X_test, y_train, y_test, groups_train
+
 
 def _preparar_xy(df: pd.DataFrame, target: str = 'manobra') -> tuple[np.ndarray, np.ndarray]:
     """Extrai features e target como arrays numpy brutos (sem pré-processamento)."""
@@ -127,12 +178,10 @@ def aplicar_modelos_ml(
 
     pca_n_components : None | int (nº de componentes) | float 0–1 (variância explicada)
     """
-    X, y = _preparar_xy(df, target=target)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
+        df, target=target, test_size=test_size, random_state=random_state,
     )
-
-    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    cv = GroupKFold(n_splits=cv_folds)
 
     modelos = {
         'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
@@ -155,7 +204,7 @@ def aplicar_modelos_ml(
 
         # cross_validate sobre X_train bruto — SMOTE contido em cada fold pelo ImbPipeline
         cv_res = cross_validate(
-            pipe, X_train, y_train, cv=cv,
+            pipe, X_train, y_train, cv=cv, groups=groups_train,
             scoring={'acc': 'accuracy', 'f1': f'f1_{f1_average}'},
         )
         cv_acc = cv_res['test_acc'].mean()
@@ -458,6 +507,182 @@ def construir_lstm(janela_tempo: int, num_features: int):
     return modelo
 
 
+# ── Optuna — Tuning de XGBoost e RandomForest ────────────────────────────────
+
+def _optuna_xgb(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    groups: np.ndarray,
+    task: str = 'classify',
+    cv_folds: int = 5,
+    n_trials: int = 50,
+    random_state: int = 42,
+) -> dict:
+    """
+    Tuna XGBoost com Optuna usando GroupKFold.
+    task='classify' → XGBClassifier + f1_weighted
+    task='regress'  → XGBRegressor  + r2
+    """
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        params = {
+            'n_estimators':     trial.suggest_int('n_estimators', 100, 600),
+            'max_depth':        trial.suggest_int('max_depth', 3, 9),
+            'learning_rate':    trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'subsample':        trial.suggest_float('subsample', 0.5, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.5, 1.0),
+            'min_child_weight': trial.suggest_int('min_child_weight', 1, 10),
+            'random_state':     random_state,
+        }
+        if task == 'classify':
+            clf     = XGBClassifier(eval_metric='logloss', **params)
+            scoring = 'f1_weighted'
+        else:
+            clf     = XGBRegressor(eval_metric='rmse', **params)
+            scoring = 'r2'
+        pipe   = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
+        cv     = GroupKFold(n_splits=cv_folds)
+        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring)
+        return scores['test_score'].mean()
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials)
+    return study.best_params
+
+
+def _optuna_rf(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    groups: np.ndarray,
+    task: str = 'classify',
+    cv_folds: int = 5,
+    n_trials: int = 30,
+    random_state: int = 42,
+) -> dict:
+    """
+    Tuna RandomForest com Optuna usando GroupKFold.
+    task='classify' → RandomForestClassifier + f1_weighted
+    task='regress'  → RandomForestRegressor  + r2
+    """
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        params = {
+            'n_estimators':      trial.suggest_int('n_estimators', 100, 500),
+            'max_depth':         trial.suggest_categorical('max_depth', [None, 10, 20, 30]),
+            'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
+            'min_samples_leaf':  trial.suggest_int('min_samples_leaf', 1, 10),
+            'max_features':      trial.suggest_categorical('max_features', ['sqrt', 'log2']),
+            'random_state':      random_state,
+        }
+        if task == 'classify':
+            clf     = RandomForestClassifier(**params)
+            scoring = 'f1_weighted'
+        else:
+            clf     = RandomForestRegressor(**params)
+            scoring = 'r2'
+        pipe   = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
+        cv     = GroupKFold(n_splits=cv_folds)
+        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring)
+        return scores['test_score'].mean()
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials)
+    return study.best_params
+
+
+def aplicar_modelos_ml_otimizados(
+    df: pd.DataFrame,
+    plot_cm: bool = False,
+    random_state: int = 42,
+    test_size: float = 0.3,
+    cv_folds: int = 5,
+    n_trials_xgb: int = 50,
+    n_trials_rf: int = 30,
+    target: str = 'manobra',
+    f1_average: str = 'weighted',
+) -> pd.DataFrame:
+    """
+    Igual a aplicar_modelos_ml mas com Optuna para XGBoost e RandomForest.
+    Usa split por id_route e GroupKFold.
+    """
+    X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
+        df, target=target, test_size=test_size, random_state=random_state,
+    )
+    cv = GroupKFold(n_splits=cv_folds)
+
+    print(f"  Tuning XGBoost com Optuna ({n_trials_xgb} trials)...")
+    best_xgb = _optuna_xgb(X_train, y_train, groups_train, cv_folds=cv_folds,
+                            n_trials=n_trials_xgb, random_state=random_state)
+    print(f"  Melhores params XGB: {best_xgb}")
+
+    print(f"  Tuning RandomForest com Optuna ({n_trials_rf} trials)...")
+    best_rf = _optuna_rf(X_train, y_train, groups_train, cv_folds=cv_folds,
+                         n_trials=n_trials_rf, random_state=random_state)
+    print(f"  Melhores params RF: {best_rf}")
+
+    modelos = {
+        'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
+        'SVM':                 svm.SVC(kernel='linear', random_state=random_state),
+        'Árvore de Decisão':   DecisionTreeClassifier(random_state=random_state),
+        'Floresta Aleatória':  RandomForestClassifier(**best_rf),
+        'XGBoost':             XGBClassifier(eval_metric='logloss', **best_xgb),
+        'Rede Neural (MLP)':   MLPClassifier(
+            activation='relu', solver='adam',
+            hidden_layer_sizes=(128, 64), max_iter=2000, random_state=random_state,
+        ),
+    }
+
+    linhas = []
+    for nome, clf in modelos.items():
+        pipe   = _construir_pipeline(clf, random_state=random_state)
+        cv_res = cross_validate(
+            pipe, X_train, y_train, cv=cv, groups=groups_train,
+            scoring={'acc': 'accuracy', 'f1': f'f1_{f1_average}'},
+        )
+        cv_acc = cv_res['test_acc'].mean()
+        cv_f1  = cv_res['test_f1'].mean()
+
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+
+        acc  = accuracy_score(y_test, y_pred)
+        f1   = f1_score(y_test, y_pred, average=f1_average)
+        prec = precision_score(y_test, y_pred, average=f1_average, zero_division=0)
+        rec  = recall_score(y_test, y_pred, average=f1_average)
+
+        print(
+            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
+            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
+        )
+
+        if plot_cm:
+            cm = confusion_matrix(y_test, y_pred)
+            plt.figure(figsize=(6, 4))
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                        xticklabels=['Segura', 'Risco'],
+                        yticklabels=['Segura', 'Risco'])
+            plt.title(nome)
+            plt.ylabel('Real')
+            plt.xlabel('Prevista')
+            os.makedirs('results', exist_ok=True)
+            plt.savefig(f'results/matriz_confusao_{nome}_opt.pdf', bbox_inches='tight')
+            plt.close()
+
+        linhas.append({
+            'Classificador': nome, 'CV Acc (média)': cv_acc, 'CV F1 (média)': cv_f1,
+            'Acc (teste)': acc, 'F1 (teste)': f1, 'Precisão (teste)': prec, 'Recall (teste)': rec,
+        })
+
+    df_res = pd.DataFrame(linhas)
+    os.makedirs('results', exist_ok=True)
+    df_res.to_latex('results/ml_resultados_opt.tex', float_format='%.3f', index=False)
+    return df_res
+
+
 # ── ISL — Índice de Segurança Lateral ────────────────────────────────────────
 
 _COLS_EXCLUIR_ISL = _COLS_EXCLUIR  # isl_mean/max/class/alto já estão em _COLS_EXCLUIR
@@ -635,9 +860,6 @@ def treinar_regressao(
             n_estimators=300, learning_rate=0.1, max_depth=6,
             eval_metric='rmse', random_state=random_state,
         ),
-        'MLP':                MLPRegressor(
-            hidden_layer_sizes=(128, 64), max_iter=2000, random_state=random_state,
-        ),
     }
 
     linhas = []
@@ -664,18 +886,8 @@ def treinar_regressao(
         )
 
         if plot:
-            plt.figure(figsize=(5, 5))
-            plt.scatter(y_test, y_pred, alpha=0.4, s=20)
-            lim = max(float(y_test.max()), float(y_pred.max())) * 1.05
-            plt.plot([0, lim], [0, lim], 'r--', linewidth=1)
-            plt.xlabel(f'{target} real')
-            plt.ylabel(f'{target} previsto')
-            plt.title(f'Regressão {target} — {nome}')
-            plt.tight_layout()
-            os.makedirs('results', exist_ok=True)
-            safe = target.replace('/', '_')
-            plt.savefig(f'results/scatter_{safe}_{nome}.pdf', bbox_inches='tight')
-            plt.close()
+            from graphics.visualization import plotar_scatter_regressao
+            plotar_scatter_regressao(y_test, y_pred, target=target, nome_modelo=nome)
 
         linhas.append({
             'Modelo': nome, 'CV MAE': cv_mae, 'CV R²': cv_r2,
