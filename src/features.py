@@ -34,16 +34,21 @@ def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
 
 def extrair_features(
     data: pd.DataFrame,
-    janela_tempo: int = 10,
+    janela_tempo: int = 15,
     janela_distancia: float | None = None,
+    janela_acel_confort: float = 2.5,
+    janela_distancia_min: float = 50.0,
+    janela_distancia_max: float = 400.0,
 ) -> pd.DataFrame:
     """
     Extrai features da janela pré-curva e targets de comportamento dentro da curva.
 
     Janela pré-curva
     ----------------
-    Por tempo  : ``janela_tempo`` segundos antes da curva (padrão).
-    Por distância: ``janela_distancia`` metros antes da curva (P3 — tem precedência).
+    Quando ``janela_distancia`` é fornecida, usa essa distância fixa (m).
+    Caso contrário, calcula dinamicamente a distância de frenagem confortável
+    com base na velocidade de aproximação: d = v² / (2 * a_confort), clipada
+    em [janela_distancia_min, janela_distancia_max].
 
     Features (janela pré-curva)
     ---------------------------
@@ -79,30 +84,46 @@ def extrair_features(
     df['conducao'] = df['conducao'].map({'Perigosa': 1, 'Segura': 0})
     df = df.sort_values(by=['id_route', 'time_sec'])
 
-    vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y', 'accel_z']
+    vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y']
 
     for (id_route_atual, trecho_curvo), curva in df.groupby(['id_route', 'trecho_curvo']):
         if len(curva) <= 2:
             continue
 
-        # ── Janela pré-curva (P3: distância tem precedência sobre tempo) ──────
+        # ── Janela pré-curva ─────────────────────────────────────────────────
+        dist_entrada = curva['distancia_acumulada'].min()
+
         if janela_distancia is not None:
-            dist_entrada = curva['distancia_acumulada'].min()
-            janela = df[
+            # distância fixa explícita
+            d_janela = float(janela_distancia)
+        else:
+            # distância dinâmica: d = v² / (2 * a_confort), baseada na
+            # velocidade média dos últimos pontos antes da curva
+            pontos_antes = df[
                 (df['id_route'] == id_route_atual)
                 & (df['distancia_acumulada'] < dist_entrada)
-                & (df['distancia_acumulada'] >= dist_entrada - janela_distancia)
-            ].copy()
-        else:
-            inicio_curva = curva['time_sec'].min()
-            janela = df[
-                (df['id_route'] == id_route_atual)
-                & (df['time_sec'] < inicio_curva)
-                & (df['time_sec'] >= inicio_curva - janela_tempo)
-            ].copy()
+            ].tail(5)
+            v_ms = (
+                float(pontos_antes['vehicle_speed'].mean()) / 3.6
+                if not pontos_antes.empty else 60.0 / 3.6
+            )
+            d_janela = float(np.clip(
+                v_ms ** 2 / (2.0 * janela_acel_confort),
+                janela_distancia_min,
+                janela_distancia_max,
+            ))
+
+        janela = df[
+            (df['id_route'] == id_route_atual)
+            & (df['distancia_acumulada'] < dist_entrada)
+            & (df['distancia_acumulada'] >= dist_entrada - d_janela)
+        ].copy()
+
+        # Melhoria #2 — remove pontos pertencentes a uma curva anterior
+        if 'curva' in janela.columns:
+            janela = janela[~janela['curva']].copy()
 
         if janela.empty:
-            print(f'Janela vazia para {id_route_atual} e trecho {trecho_curvo}')
             continue
 
         row: dict = {
@@ -142,7 +163,7 @@ def extrair_features(
                 row[f'{var}_slope_tarde'] = row[f'{var}_slope']
 
         # Jerk (taxa de variação da aceleração) — detecta reações bruscas do motorista
-        for var in ['accel_x', 'accel_y', 'accel_z']:
+        for var in ['accel_x', 'accel_y']:
             vals = janela[var].values
             dt_arr = np.diff(janela['time_sec'].values)
             dt_arr = np.where(dt_arr > 0, dt_arr, 1e-3)
@@ -153,9 +174,13 @@ def extrair_features(
         row['distance_car_curve']          = float(
             janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
         )
-        row['n_perigo_accel_janela']   = int(janela['manobra_accel'].sum())
-        row['n_perigo_lateral_janela'] = int(janela['manobra_lateral'].sum())
-        row['n_perigo_zz_janela']      = int(janela['manobra_ziguezague'].sum())
+        # Contagem de pontos na janela pré-curva onde cada critério dispara,
+        # calculados diretamente dos sensores (independente dos rótulos de
+        # caracterização, que agora cobrem apenas os segmentos de curva).
+        _kamm_lim = 0.7 * 0.6 * _G
+        _accel_total_janela = np.sqrt(janela['accel_x'].values**2 + janela['accel_y'].values**2)
+        row['n_perigo_accel_janela']   = int((_accel_total_janela > _kamm_lim).sum())
+        row['n_perigo_lateral_janela'] = int((janela['accel_y'].abs() > 2.0).sum())
 
         # Raio de curvatura na janela pré-curva (estimativa da geometria da curva seguinte)
         # Sem leakage: são pontos ANTES da curva; o B-spline suavizado já captura a curvatura
@@ -174,10 +199,10 @@ def extrair_features(
             row['janela_raio_min'] = row['janela_raio_mean'] = row['janela_raio_last'] = np.nan
 
         # ── Targets de classificação (Li et al.) ──────────────────────────────
-        row['manobra_accel_curva']       = 1 if curva['manobra_accel'].mean() >= 0.5 else 0
-        row['manobra_lateral_curva']     = 1 if curva['manobra_lateral'].mean() >= 0.5 else 0
-        row['manobra_ziguezague_curva']  = 1 if curva['manobra_ziguezague'].mean() >= 0.5 else 0
-        row['manobra_combinado_curva']   = 1 if curva['manobra_combinado'].mean() >= 0.5 else 0
+        row['manobra_accel_curva']       = 1 if curva['manobra_accel'].any() else 0
+        row['manobra_lateral_curva']     = 1 if curva['manobra_lateral'].any() else 0
+        row['manobra_ziguezague_curva']  = 1 if curva['manobra_ziguezague'].any() else 0
+        row['manobra_combinado_curva']   = 1 if curva['manobra_combinado'].any() else 0
         row['manobra']                   = row['manobra_combinado_curva']  # retrocompat
 
         # ── Pontos dentro da curva ────────────────────────────────────────────

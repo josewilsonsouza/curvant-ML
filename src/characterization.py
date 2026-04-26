@@ -2,15 +2,18 @@
 CurvantML — Taxonomia explícita de caracterizações de risco em curvas.
 
 Produz colunas separadas por critério de risco:
-  manobra_accel      — aceleração/frenagem anormal na janela
-  manobra_lateral    — direção perigosa (|accel_y| + DNIT)
-  manobra_ziguezague — padrão de zigue-zague
+  manobra_accel      — vetor de aceleração excede fração do limite de aderência (Kamm)
+  manobra_lateral    — accel_y excessiva em curva DNIT ≥ média
+  manobra_ziguezague — padrão de zigue-zague (bearing + accel centrípeta)
   manobra_combinado  — OR dos três (retrocompat com 'conducao')
   conducao           — alias de manobra_combinado ('Perigosa'/'Segura')
 """
 
 import numpy as np
 import pandas as pd
+
+_G:  float = 9.81   # m/s²
+_MU: float = 0.6    # coeficiente de atrito estático — asfalto seco
 
 _DNIT_RISCO: dict[str, int] = {
     'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4,
@@ -38,31 +41,48 @@ def _detectar_zigue_zague(
     ctp  = janela['ctp_accel'].tolist()
     if len(lats) < 2:
         return False
+
     bearings = np.array([
         calcular_bearing(lats[i - 1], lons[i - 1], lats[i], lons[i])
         for i in range(1, len(lats))
     ])
-    contador = 0
+
+    contador     = 0
+    ultimo_sinal = 0  # sinal da última mudança qualificada; 0 = nenhuma ainda
+
     for i in range(1, len(bearings)):
-        mudanca = abs((bearings[i] - bearings[i - 1] + 180) % 360 - 180)
-        if mudanca > limiar_bearing and abs(ctp[i]) > limiar_accel_lateral:
-            contador += 1
-            if contador >= min_mudancas:
-                return True
+        # preserva o sinal: positivo = virou à direita, negativo = à esquerda
+        mudanca = (bearings[i] - bearings[i - 1] + 180) % 360 - 180
+        if abs(mudanca) > limiar_bearing and abs(ctp[i]) > limiar_accel_lateral:
+            sinal = int(np.sign(mudanca))
+            if sinal != ultimo_sinal:   # alternância real de direção
+                contador     += 1
+                ultimo_sinal  = sinal
+                if contador >= min_mudancas:
+                    return True
+            # mesma direção que a anterior: curva contínua, não zigue-zague
+
     return False
 
 
 def caracterizar_janela(
     janela: pd.DataFrame,
-    var_velocidade_max: float = 20.0,
-    limiar_accel_lateral: float = 3.0,
+    kamm_alpha: float = 0.7,
+    limiar_accel_lateral: float = 2.0,
     zz_limiar_bearing: float = 15.0,
     zz_limiar_accel: float = 0.3,
     zz_min_mudancas: int = 3,
 ) -> dict:
-    """Aplica os três critérios de risco a uma janela de tempo. Retorna dict de bools."""
-    var_vel       = janela['vehicle_speed'].diff().abs().sum()
-    manobra_accel = bool(var_vel > var_velocidade_max)
+    """Aplica os três critérios de risco a uma janela de tempo. Retorna dict de bools.
+
+    Critério 1 — Círculo de Kamm:
+        max_t sqrt(accel_x² + accel_y²) > alpha * mu * g
+        Detecta qualquer instante em que o vetor de aceleração total ultrapassa
+        uma fração alpha do limite de aderência disponível.
+    """
+    kamm_limite   = kamm_alpha * _MU * _G
+    accel_total   = np.sqrt(janela['accel_x'].values**2 + janela['accel_y'].values**2)
+    manobra_accel = bool(accel_total.max() > kamm_limite)
 
     risco_dnit = (
         int(janela['classe_dnit'].map(_DNIT_RISCO).max())
@@ -85,50 +105,86 @@ def caracterizar_janela(
 
 def caracterizar_conducao(
     df: pd.DataFrame,
-    janela_tempo: int = 10,
-    var_velocidade_max: float = 20.0,
-    limiar_accel_lateral: float = 3.0,
+    janela_tempo: int = 15,
+    janela_aproximacao: int = 5,
+    kamm_alpha: float = 0.7,
+    limiar_accel_lateral: float = 2.0,
     **zz_kwargs,
 ) -> pd.DataFrame:
     """
-    Classifica janelas deslizantes com a taxonomia de risco explícita.
+    Caracteriza risco por segmento de curva (trecho contíguo curva=True).
 
-    Colunas adicionadas ao DataFrame:
-      manobra_accel, manobra_lateral, manobra_ziguezague (bool por janela)
-      manobra_combinado (OR dos três)
-      conducao ('Perigosa'/'Segura') — alias de manobra_combinado
-      risco_dnit, id_janela
+    Para cada segmento de curva, avalia os critérios sobre a janela de
+    aproximação (janela_aproximacao segundos antes) + os pontos do segmento.
+    Os rótulos são atribuídos apenas aos pontos do segmento; pontos fora de
+    curvas recebem False/Segura.
+
+    Quando a coluna 'curva' não está disponível, cai no modo legado de janelas
+    fixas de janela_tempo segundos.
     """
-    resultados = []
-    inicio    = df['time_sec'].min()
-    fim       = df['time_sec'].max()
-    t         = inicio
-    id_janela = 1
+    _cols = ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']
 
-    while t + janela_tempo <= fim:
-        janela = df[(df['time_sec'] >= t) & (df['time_sec'] < t + janela_tempo)]
-        if len(janela) < 2:
+    if 'curva' not in df.columns:
+        # ── modo legado: janelas fixas ────────────────────────────────────────
+        resultados = []
+        t, fim, id_janela = df['time_sec'].min(), df['time_sec'].max(), 1
+        while t + janela_tempo <= fim:
+            janela = df[(df['time_sec'] >= t) & (df['time_sec'] < t + janela_tempo)]
+            if len(janela) >= 2:
+                r = caracterizar_janela(janela, kamm_alpha, limiar_accel_lateral, **zz_kwargs)
+                comb = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
+                janela = janela.copy()
+                for k in _cols[:3]:
+                    janela[k] = r[k.replace('manobra_', 'manobra_')]
+                janela['manobra_combinado'] = comb
+                janela['conducao']  = 'Perigosa' if comb else 'Segura'
+                janela['risco_dnit'] = r['risco_dnit']
+                janela['id_janela'] = id_janela
+                id_janela += 1
+                resultados.append(janela)
             t += janela_tempo
+        return pd.concat(resultados, ignore_index=True) if resultados else pd.DataFrame()
+
+    # ── modo curva-ancorado ───────────────────────────────────────────────────
+    df_out = df.sort_values('time_sec').copy()
+    for col in _cols:
+        df_out[col] = False
+    df_out['conducao']   = 'Segura'
+    df_out['risco_dnit'] = 0
+    df_out['id_janela']  = 0
+
+    # identifica blocos contíguos de curva=True dentro do trajeto
+    df_out['_bloco'] = (df_out['curva'] != df_out['curva'].shift()).cumsum()
+
+    id_janela = 1
+    for _, bloco in df_out.groupby('_bloco', sort=False):
+        if not bool(bloco['curva'].iloc[0]):
+            continue  # pula trechos retos
+
+        t_inicio = bloco['time_sec'].min()
+        abordagem = df_out[
+            (df_out['time_sec'] >= t_inicio - janela_aproximacao)
+            & (df_out['time_sec'] < t_inicio)
+        ]
+        janela_avaliacao = pd.concat([abordagem, bloco]).sort_values('time_sec')
+
+        if len(janela_avaliacao) < 2:
             continue
 
-        r = caracterizar_janela(janela, var_velocidade_max, limiar_accel_lateral, **zz_kwargs)
-        manobra_combinado = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
+        r    = caracterizar_janela(janela_avaliacao, kamm_alpha, limiar_accel_lateral, **zz_kwargs)
+        comb = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
 
-        janela = janela.copy()
-        janela['manobra_accel']      = r['manobra_accel']
-        janela['manobra_lateral']    = r['manobra_lateral']
-        janela['manobra_ziguezague'] = r['manobra_ziguezague']
-        janela['manobra_combinado']  = manobra_combinado
-        janela['conducao']           = 'Perigosa' if manobra_combinado else 'Segura'
-        janela['risco_dnit']         = r['risco_dnit']
-        janela['id_janela']          = id_janela
+        idx = bloco.index
+        df_out.loc[idx, 'manobra_accel']      = r['manobra_accel']
+        df_out.loc[idx, 'manobra_lateral']    = r['manobra_lateral']
+        df_out.loc[idx, 'manobra_ziguezague'] = r['manobra_ziguezague']
+        df_out.loc[idx, 'manobra_combinado']  = comb
+        df_out.loc[idx, 'conducao']           = 'Perigosa' if comb else 'Segura'
+        df_out.loc[idx, 'risco_dnit']         = r['risco_dnit']
+        df_out.loc[idx, 'id_janela']          = id_janela
         id_janela += 1
-        resultados.append(janela)
-        t += janela_tempo
 
-    if not resultados:
-        return pd.DataFrame()
-    return pd.concat(resultados, ignore_index=True)
+    return df_out.drop(columns=['_bloco'])
 
 
 def caracterizar_todos_trajetos(

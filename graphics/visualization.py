@@ -102,11 +102,11 @@ def plotar_trajeto_conducao(df: pd.DataFrame, tipo: str = 'conducao') -> None:
     if not pts_perigosos.empty:
         ax[0].scatter(
             -pts_perigosos['x'], -pts_perigosos['y'],
-            color='red', label=f'Condução Perigosa ({tipo})', s=50, marker='.',
+            color='red', label=f'Condução de Risco ({tipo})', s=50, marker='.',
         )
 
     name_traj = df['id_route'].iloc[0]
-    ax[0].set_title(f'Condução Perigosa Destacada\n{name_traj}')
+    ax[0].set_title(f'Condução de Risco Destacada\n{name_traj}')
     ax[0].set_xlabel('Posição X')
     ax[0].set_ylabel('Posição Y')
     ax[1].set_xlabel('Posição X')

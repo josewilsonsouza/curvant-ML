@@ -66,7 +66,7 @@ def main(args: argparse.Namespace) -> None:
         dfs_curves['accel_x'] ** 2 + dfs_curves['accel_y'] ** 2
     )
 
-    print("\n[4/6] Analisando condução perigosa...")
+    print("\n[4/6] Analisando risco na condução...")
     df_analysis = etapa_analise_conducao(dfs_curves, cfg, args.plot)
 
     print("\n[5/6] Identificando trechos curvos e extraindo features...")

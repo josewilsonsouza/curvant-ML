@@ -44,8 +44,9 @@ def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> p
         resultado = caracterizar_conducao(
             dt,
             janela_tempo=da['janela_tempo'],
-            var_velocidade_max=da['var_velocidade_max'],
-            limiar_accel_lateral=da.get('limiar_accel_lateral', 3.0),
+            janela_aproximacao=da.get('janela_aproximacao', 5),
+            kamm_alpha=da.get('kamm_alpha', 0.7),
+            limiar_accel_lateral=da.get('limiar_accel_lateral', 2.0),
             zz_limiar_bearing=da.get('zigue_zague', {}).get('limiar_bearing', 15.0),
             zz_limiar_accel=da.get('zigue_zague', {}).get('limiar_accel_lateral', 0.3),
             zz_min_mudancas=da.get('zigue_zague', {}).get('min_mudancas', 3),
@@ -60,7 +61,7 @@ def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> p
     n_accel    = df_analysis['manobra_accel'].sum()
     n_lateral  = df_analysis['manobra_lateral'].sum()
     n_zz       = df_analysis['manobra_ziguezague'].sum()
-    print(f"  Janelas — Perigosa: {n_perigosa} | Segura: {n_segura}")
+    print(f"  Janelas — Risco: {n_perigosa} | Segura: {n_segura}")
     print(f"  Critérios — Accel: {n_accel} | Lateral: {n_lateral} | ZZ: {n_zz}")
 
     return df_analysis
@@ -79,10 +80,14 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') ->
             df_analysis[col] = df_analysis[col].astype(int)
 
     dfs_trechos = identificar_trechos_curvos(df_analysis)
+    ft = cfg['features']
     features_df = extrair_features(
         dfs_trechos,
-        janela_tempo=cfg['features']['janela_tempo'],
-        janela_distancia=cfg['features'].get('janela_distancia'),
+        janela_tempo=ft['janela_tempo'],
+        janela_distancia=ft.get('janela_distancia'),
+        janela_acel_confort=ft.get('janela_acel_confort', 2.5),
+        janela_distancia_min=ft.get('janela_distancia_min', 50.0),
+        janela_distancia_max=ft.get('janela_distancia_max', 400.0),
     )
 
     if modo == 'modo2':
@@ -93,20 +98,27 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') ->
 
     n_perigosa = features_df['manobra_combinado_curva'].sum()
     n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
-    print(f"  {len(features_df)} amostras — Perigosa: {n_perigosa} | Segura: {n_segura}")
+    print(f"  {len(features_df)} amostras — Risco: {n_perigosa} | Segura: {n_segura}")
 
     crit_cols = {
         'manobra_accel_curva':      'Aceleração anormal',
-        'manobra_lateral_curva':    'Direção perigosa',
+        'manobra_lateral_curva':    'Aceleração lateral',
         'manobra_ziguezague_curva': 'Zigue-zague',
     }
     tab = features_df.groupby('manobra_combinado_curva')[list(crit_cols.keys())].sum().rename(columns=crit_cols)
-    tab.index = tab.index.map({0: 'Segura', 1: 'Perigosa'})
-    tab.insert(0, 'Condução', features_df.groupby('manobra_combinado_curva').size().rename({0: 'Segura', 1: 'Perigosa'}))
-    tab.index.name = 'Manobra'
+    tab.index = tab.index.map({0: 'Segura', 1: 'Risco'})
+    tab.insert(0, 'Total curvas', features_df.groupby('manobra_combinado_curva').size().rename({0: 'Segura', 1: 'Risco'}))
+    tab.index.name = 'Classificação'
     print(tab.to_string())
     os.makedirs('results', exist_ok=True)
-    tab.to_latex('results/tab_result.tex', index=True)
+    tab.to_latex(
+        'results/tab_result.tex',
+        index=True,
+        caption='Distribuição dos critérios de risco por curva — contagem de curvas Segura e Risco em que cada critério foi ativado.',
+        label='tab:criterios_risco',
+        position='h',
+        column_format='lcccc',
+    )
 
     return features_df
 
@@ -127,7 +139,6 @@ def etapa_ml_classico(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Da
         cv_folds=ml['cv_folds'],
         pca_n_components=pca,
     )
-    print(resultados.to_string(index=False))
     return resultados
 
 
@@ -143,10 +154,10 @@ def etapa_ml_otimizado(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.D
         random_state=ml['random_state'],
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
-        n_trials_xgb=opt.get('n_trials', 50),
-        n_trials_rf=opt.get('n_trials', 30),
+        n_trials_xgb=opt.get('n_trials_xgb', opt.get('n_trials', 50)),
+        n_trials_rf=opt.get('n_trials_rf', opt.get('n_trials', 30)),
+        timeout=opt.get('timeout'),
     )
-    print(resultados.to_string(index=False))
     return resultados
 
 
@@ -165,7 +176,6 @@ def _etapa_regressao(features_df: pd.DataFrame, cfg: dict, plot: bool, target: s
         pca_n_components=ml.get('pca_n_components'),
         cap_percentil=ml.get('isl_max_cap_percentil'),
     )
-    print(resultados.to_string(index=False))
     return resultados
 
 
@@ -187,7 +197,7 @@ def etapa_manobra_velocidade(features_df: pd.DataFrame, cfg: dict, plot: bool) -
 
     n_perigosa = df_v['manobra_velocidade'].sum()
     n_segura   = (df_v['manobra_velocidade'] == 0).sum()
-    print(f"  v_entry label — Perigosa (v>v_safe): {n_perigosa} | Segura: {n_segura}")
+    print(f"  v_entry label — Risco (v>v_safe): {n_perigosa} | Segura: {n_segura}")
 
     ml = cfg['ml']
     resultados = aplicar_modelos_ml(
@@ -200,7 +210,6 @@ def etapa_manobra_velocidade(features_df: pd.DataFrame, cfg: dict, plot: bool) -
         target='manobra_velocidade',
         f1_average='macro',
     )
-    print(resultados.to_string(index=False))
     return resultados
 
 
@@ -226,7 +235,6 @@ def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Dat
         pca_n_components=ml.get('pca_n_components'),
         isl_max_cap_percentil=ml.get('isl_max_cap_percentil'),
     )
-    print(resultados.to_string(index=False))
     return resultados
 
 

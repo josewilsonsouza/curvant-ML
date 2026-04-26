@@ -33,19 +33,22 @@ curve_detection:
     # suave: R > 500 m
 
 driving_analysis:
-  janela_tempo: 15            # segundos por janela de classificação (era 10)
-  var_velocidade_max: 20      # km/h — limite para aceleração/frenagem anormal
-  velocidade_max_direcao: 30  # km/h — velocidade mínima para direção perigosa
-  angulo_max_direcao: 0.0     # não utilizado pelo critério atual (opção A usa accel_y)
-  limiar_accel_lateral: 2.0  # m/s² — |accel_y|_max mínimo para direcao_perigosa (era 3.0)
+  janela_tempo: 15            # segundos (usado apenas no modo legado sem coluna 'curva')
+  janela_aproximacao: 5       # segundos de abordagem incluídos na avaliação de cada curva
+  kamm_alpha: 0.7             # fração do limite de aderência (μg) para Critério 1 (Kamm)
+                              # 0.7 → limiar = 0.7 × 0.6 × 9.81 ≈ 4.12 m/s²
+  limiar_accel_lateral: 2.0  # m/s² — |accel_y|_max mínimo para Critério 2 (DNIT ≥ média)
   zigue_zague:
     limiar_bearing: 15        # graus — mudança mínima de bearing
     limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
     min_mudancas: 3           # nº de eventos para detectar zigue-zague
 
 features:
-  janela_tempo: 15          # segundos antes do início da curva (era 10)
-  janela_distancia: null    # metros antes da curva (P3); null = usar janela_tempo
+  janela_tempo: 15          # usado como fallback se distancia_acumulada ausente
+  janela_distancia: null    # metros fixos antes da curva; null = distância dinâmica
+  janela_acel_confort: 2.5  # m/s² — desaceleração de conforto para cálculo dinâmico
+  janela_distancia_min: 50  # m — distância mínima da janela dinâmica
+  janela_distancia_max: 400 # m — distância máxima da janela dinâmica
   vars_sensor:
     - vehicle_speed
     - engine_rpm
@@ -98,5 +101,6 @@ neural_networks:
     lr: 0.0005
 
 optuna:
-  n_trials: 50        # trials por modelo/target
-  timeout: 300        # segundos máximos por otimização
+  n_trials_xgb: 50    # trials para XGBoost
+  n_trials_rf: 30     # trials para RandomForest
+  timeout: 300        # segundos máximos por otimização (interrompe antes de acabar os trials)

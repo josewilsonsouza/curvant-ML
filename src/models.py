@@ -249,7 +249,15 @@ def aplicar_modelos_ml(
 
     df_res = pd.DataFrame(linhas)
     os.makedirs('results', exist_ok=True)
-    df_res.to_latex('results/ml_resultados.tex', float_format='%.3f', index=False)
+    df_res.to_latex(
+        'results/ml_resultados.tex',
+        float_format='%.3f',
+        index=False,
+        caption='Resultados dos modelos clássicos de ML — validação cruzada por rota (GroupKFold) e conjunto de teste.',
+        label='tab:ml_resultados',
+        position='h',
+        column_format='lcccccc',
+    )
     return df_res
 
 
@@ -516,6 +524,7 @@ def _optuna_xgb(
     task: str = 'classify',
     cv_folds: int = 5,
     n_trials: int = 50,
+    timeout: int | None = None,
     random_state: int = 42,
 ) -> dict:
     """
@@ -544,11 +553,11 @@ def _optuna_xgb(
             scoring = 'r2'
         pipe   = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
         cv     = GroupKFold(n_splits=cv_folds)
-        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring)
+        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring, n_jobs=-1)
         return scores['test_score'].mean()
 
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=n_trials, timeout=timeout)
     return study.best_params
 
 
@@ -559,6 +568,7 @@ def _optuna_rf(
     task: str = 'classify',
     cv_folds: int = 5,
     n_trials: int = 30,
+    timeout: int | None = None,
     random_state: int = 42,
 ) -> dict:
     """
@@ -586,11 +596,11 @@ def _optuna_rf(
             scoring = 'r2'
         pipe   = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
         cv     = GroupKFold(n_splits=cv_folds)
-        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring)
+        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring, n_jobs=-1)
         return scores['test_score'].mean()
 
     study = optuna.create_study(direction='maximize')
-    study.optimize(objective, n_trials=n_trials)
+    study.optimize(objective, n_trials=n_trials, timeout=timeout)
     return study.best_params
 
 
@@ -602,6 +612,7 @@ def aplicar_modelos_ml_otimizados(
     cv_folds: int = 5,
     n_trials_xgb: int = 50,
     n_trials_rf: int = 30,
+    timeout: int | None = None,
     target: str = 'manobra',
     f1_average: str = 'weighted',
 ) -> pd.DataFrame:
@@ -614,14 +625,15 @@ def aplicar_modelos_ml_otimizados(
     )
     cv = GroupKFold(n_splits=cv_folds)
 
-    print(f"  Tuning XGBoost com Optuna ({n_trials_xgb} trials)...")
+    timeout_str = f", timeout={timeout}s" if timeout else ""
+    print(f"  Tuning XGBoost com Optuna ({n_trials_xgb} trials{timeout_str})...")
     best_xgb = _optuna_xgb(X_train, y_train, groups_train, cv_folds=cv_folds,
-                            n_trials=n_trials_xgb, random_state=random_state)
+                            n_trials=n_trials_xgb, timeout=timeout, random_state=random_state)
     print(f"  Melhores params XGB: {best_xgb}")
 
-    print(f"  Tuning RandomForest com Optuna ({n_trials_rf} trials)...")
+    print(f"  Tuning RandomForest com Optuna ({n_trials_rf} trials{timeout_str})...")
     best_rf = _optuna_rf(X_train, y_train, groups_train, cv_folds=cv_folds,
-                         n_trials=n_trials_rf, random_state=random_state)
+                         n_trials=n_trials_rf, timeout=timeout, random_state=random_state)
     print(f"  Melhores params RF: {best_rf}")
 
     modelos = {
@@ -679,7 +691,15 @@ def aplicar_modelos_ml_otimizados(
 
     df_res = pd.DataFrame(linhas)
     os.makedirs('results', exist_ok=True)
-    df_res.to_latex('results/ml_resultados_opt.tex', float_format='%.3f', index=False)
+    df_res.to_latex(
+        'results/ml_resultados_opt.tex',
+        float_format='%.3f',
+        index=False,
+        caption='Resultados dos modelos com tuning Optuna (XGBoost e RandomForest) — validação cruzada por rota (GroupKFold) e conjunto de teste.',
+        label='tab:ml_resultados_opt',
+        position='h',
+        column_format='lcccccc',
+    )
     return df_res
 
 
@@ -798,7 +818,15 @@ def treinar_modelo_isl(
 
     df_res = pd.DataFrame(linhas)
     os.makedirs('results', exist_ok=True)
-    df_res.to_latex('results/isl_resultados.tex', float_format='%.3f', index=False)
+    df_res.to_latex(
+        'results/isl_resultados.tex',
+        float_format='%.3f',
+        index=False,
+        caption='Resultados da classificação do Índice de Segurança Lateral (ISL) — 3 classes (baixo/médio/alto), F1 macro, validação cruzada por rota.',
+        label='tab:isl_resultados',
+        position='h',
+        column_format='lcccccc',
+    )
     return df_res
 
 
@@ -897,7 +925,15 @@ def treinar_regressao(
     df_res = pd.DataFrame(linhas)
     os.makedirs('results', exist_ok=True)
     safe = target.replace('/', '_')
-    df_res.to_latex(f'results/regressao_{safe}.tex', float_format='%.3f', index=False)
+    df_res.to_latex(
+        f'results/regressao_{safe}.tex',
+        float_format='%.3f',
+        index=False,
+        caption=f'Resultados da regressão para o alvo \\texttt{{{target}}} — MAE, RMSE e $R^2$ em validação cruzada por rota e conjunto de teste.',
+        label=f'tab:regressao_{safe}',
+        position='h',
+        column_format='lccccc',
+    )
     return df_res
 
 
