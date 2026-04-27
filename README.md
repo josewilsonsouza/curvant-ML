@@ -98,7 +98,7 @@ $$|\Delta\theta_i| > \theta_{\lim} \;\wedge\; \left|\frac{v^2}{R}\right|_i > a_{
 
 O critério de zigue-zague exige $n_{\min}$ eventos qualificados com **alternância de sinal** entre consecutivos:
 
-$$C_{\text{zz}} = \#\bigl\{i : \text{evento qualificado} \;\wedge\; \operatorname{sgn}(\Delta\theta_i) \neq \operatorname{sgn}(\Delta\theta_{i-1})\bigr\} \geq n_{\min}$$
+$$C_{\text{zz}} = \#\bigl\{i : \text{evento qualificado} \;\wedge\; \mathrm{sgn}(\Delta\theta_i) \neq \mathrm{sgn}(\Delta\theta_{i-1})\bigr\} \geq n_{\min}$$
 
 com $\theta_{\lim} = 15°$, $a_{c,\lim} = 0{,}3\ \text{m/s}^2$ e $n_{\min} = 3$. A exigência de alternância distingue zigue-zague (esquerda–direita–esquerda) de curvas contínuas no mesmo sentido. A aceleração centrípeta $v^2/R$ é calculada diretamente dos dados OBD+GPS sem assumir $\mu$.
 
