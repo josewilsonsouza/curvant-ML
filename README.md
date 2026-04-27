@@ -72,7 +72,7 @@ onde $\mu = 0{,}6$ (atrito asfalto seco), $g = 9{,}81\ \text{m/s}^2$ e $\alpha =
 
 Detecta força centrífuga anormal percebida pelo acelerômetro lateral, condicionada à severidade geométrica da curva segundo a classificação DNIT.
 
-$$C_{\text{lateral}} = \bigl(\max_{t \in W}|a_y(t)| > a_{y,\lim}\bigr) \;\wedge\; \bigl(\text{risco}_{\text{DNIT}} \geq 2\bigr)$$
+$$C_{\text{lateral}} = \left(\max_{t \in W}|a_y(t)| > a_{y,\lim}\right) \wedge \left(\text{risco}_{\text{DNIT}} \geq 2\right)$$
 
 com $a_{y,\lim} = 2{,}0\ \text{m/s}^2$. A condição DNIT $\geq 2$ restringe o critério a curvas de raio $R \leq 200\ \text{m}$ (classes *média*, *fechada* e *muito fechada*), evitando falsos positivos em retas ou curvas suaves onde a aceleração lateral é esperada.
 
@@ -98,7 +98,7 @@ $$|\Delta\theta_i| > \theta_{\lim} \;\wedge\; \left|\frac{v^2}{R}\right|_i > a_{
 
 O critério de zigue-zague exige $n_{\min}$ eventos qualificados com **alternância de sinal** entre consecutivos:
 
-$$C_{\text{zz}} = \#\bigl\{i : \text{evento qualificado} \;\wedge\; \mathrm{sgn}(\Delta\theta_i) \neq \mathrm{sgn}(\Delta\theta_{i-1})\bigr\} \geq n_{\min}$$
+$$C_{\text{zz}} = \left|\left\{i : \text{evento qualificado} \wedge \mathrm{sgn}(\Delta\theta_i) \neq \mathrm{sgn}(\Delta\theta_{i-1})\right\}\right| \geq n_{\min}$$
 
 com $\theta_{\lim} = 15°$, $a_{c,\lim} = 0{,}3\ \text{m/s}^2$ e $n_{\min} = 3$. A exigência de alternância distingue zigue-zague (esquerda–direita–esquerda) de curvas contínuas no mesmo sentido. A aceleração centrípeta $v^2/R$ é calculada diretamente dos dados OBD+GPS sem assumir $\mu$.
 
@@ -148,7 +148,7 @@ O ISL é calculado nos pontos com `curva=True` dentro de cada curva detectada e 
 
 A análise de risco não usa partições temporais fixas. Para cada segmento contíguo de `curva=True` detectado, a avaliação dos três critérios é feita sobre a janela:
 
-$$W_k = \{\,t : t_k^{\text{início}} - \tau_{\text{apx}} \leq t < t_k^{\text{fim}}\,\}$$
+$$W_k = \left\{ t : t_k^{\text{início}} - \tau_{\text{apx}} \leq t < t_k^{\text{fim}} \right\}$$
 
 onde $t_k^{\text{início}}$ e $t_k^{\text{fim}}$ são os limites temporais do segmento $k$ e $\tau_{\text{apx}} = 5\ \text{s}$ é a janela de aproximação (configurável). Os rótulos resultantes são atribuídos **apenas aos pontos dentro do segmento** — pontos entre curvas recebem `Segura` por definição. Isso garante que os critérios são sempre avaliados em contexto geometricamente relevante e que nenhuma curva é dividida por um limite de janela arbitrário.
 
@@ -175,9 +175,9 @@ A janela é adicionalmente filtrada para excluir pontos com `curva=True`, evitan
 
 Dois contadores de evento são computados diretamente dos sensores na janela pré-curva, sem depender dos rótulos de caracterização:
 
-$$n_{\text{accel}} = \#\bigl\{t \in W : \sqrt{a_x(t)^2 + a_y(t)^2} > \alpha\mu g\bigr\}$$
+$$n_{\text{accel}} = \left|\left\{t \in W : \sqrt{a_x(t)^2 + a_y(t)^2} > \alpha\mu g\right\}\right|$$
 
-$$n_{\text{lateral}} = \#\bigl\{t \in W : |a_y(t)| > a_{y,\lim}\bigr\}$$
+$$n_{\text{lateral}} = \left|\left\{t \in W : |a_y(t)| > a_{y,\lim}\right\}\right|$$
 
 com os mesmos limiares dos Critérios 1 e 2. Esses contadores capturam a intensidade e frequência do comportamento de risco na aproximação à curva, complementando as estatísticas escalares de F1.
 
@@ -292,30 +292,21 @@ A ideia central é que todas as tarefas de previsão compartilham a mesma repres
 
 **Arquitetura:**
 
-**Encoder compartilhado** — $\mathbf{x} \in \mathbb{R}^{n}$ (features F1–F5 padronizadas):
+**Encoder compartilhado** — $\mathbf{x} \in \mathbb{R}^{n}$ (features F1–F5 padronizadas), $W_1 \in \mathbb{R}^{256 \times n}$, $W_2 \in \mathbb{R}^{128 \times 256}$:
 
-$$
-\mathbf{z} = f_{\mathrm{enc}}(\mathbf{x}) \in \mathbb{R}^{128}, \qquad
-f_{\mathrm{enc}}(\mathbf{x}) = \mathrm{Drop}_{0.3}\!\Bigl(\mathrm{ReLU}\bigl(W_2\,\mathrm{Drop}_{0.3}(\mathrm{ReLU}(W_1\,\mathrm{BN}(\mathbf{x})))\bigr)\Bigr)
-$$
+$$\mathbf{h} = \mathrm{Drop}_{0.3}\left(\mathrm{ReLU}(W_1\,\mathrm{BN}(\mathbf{x}))\right) \in \mathbb{R}^{256}$$
 
-com $W_1 \in \mathbb{R}^{256 \times n}$ e $W_2 \in \mathbb{R}^{128 \times 256}$.
+$$\mathbf{z} = \mathrm{Drop}_{0.3}\left(\mathrm{ReLU}(W_2\,\mathbf{h})\right) \in \mathbb{R}^{128}$$
 
-**Heads independentes** — aplicados sobre a representação $\mathbf{z}$:
+**Heads independentes** — $W^{(1)} \in \mathbb{R}^{64 \times 128}$, $W^{(2)} \in \mathbb{R}^{d_{\mathrm{out}} \times 64}$:
 
-$$
-\hat{y}_{\mathrm{isl\_class}} = W_{\mathrm{isl}}^{(2)}\,\mathrm{ReLU}\!\left(W_{\mathrm{isl}}^{(1)}\,\mathbf{z}\right) \in \mathbb{R}^{3}
-$$
+$$\hat{y}_{\text{isl\_class}} = W^{(2)}_{\text{isl}}\,\mathrm{ReLU}\left(W^{(1)}_{\text{isl}}\,\mathbf{z}\right) \in \mathbb{R}^{3}$$
 
-$$
-\hat{y}_{k} = \sigma\!\left(W_{k}^{(2)}\,\mathrm{ReLU}\!\left(W_{k}^{(1)}\,\mathbf{z}\right)\right) \in (0,1), \qquad k \in \{\mathrm{accel},\,\mathrm{lateral},\,\mathrm{zz}\}
-$$
-
-com $W_{\cdot}^{(1)} \in \mathbb{R}^{64 \times 128}$ e $W_{\cdot}^{(2)} \in \mathbb{R}^{d_{\mathrm{out}} \times 64}$ ($d_{\mathrm{out}} = 3$ para `isl_class`, $d_{\mathrm{out}} = 1$ para os demais).
+$$\hat{y}_{k} = \sigma\left(W^{(2)}_{k}\,\mathrm{ReLU}\left(W^{(1)}_{k}\,\mathbf{z}\right)\right) \in (0,1), \quad k \in \left\{\text{accel},\,\text{lateral},\,\text{zz}\right\}$$
 
 **Loss total:**
 
-$$L = \lambda_1\,\mathcal{L}_{\text{CE}}(\hat{y}_{\text{isl\_class}},\,y_{\text{isl\_class}}) + \sum_{k \in \{\text{accel, lateral, zz}\}} \lambda_k\,\mathcal{L}_{\text{BCE}}(\hat{y}_k, y_k)$$
+$$L = \lambda_1\,\mathcal{L}_{\text{CE}}(\hat{y}_{\text{isl}},\,y_{\text{isl}}) + \lambda_2\,\mathcal{L}_{\text{BCE}}(\hat{y}_{\text{accel}},\,y_{\text{accel}}) + \lambda_3\,\mathcal{L}_{\text{BCE}}(\hat{y}_{\text{lateral}},\,y_{\text{lateral}}) + \lambda_4\,\mathcal{L}_{\text{BCE}}(\hat{y}_{\text{zz}},\,y_{\text{zz}})$$
 
 com $\lambda_i = 1{,}0$ para todas as tarefas (configurável via `lambdas`). Um único `backward()` por batch propaga o gradiente de todas as tarefas pelo encoder compartilhado.
 
