@@ -98,7 +98,7 @@ $$|\Delta\theta_i| > \theta_{\lim} \;\wedge\; \left|\frac{v^2}{R}\right|_i > a_{
 
 O critério de zigue-zague exige $n_{\min}$ eventos qualificados com **alternância de sinal** entre consecutivos:
 
-$$C_{\text{zz}} = \left|\left\{i : \text{evento qualificado} \wedge \mathrm{sgn}(\Delta\theta_i) \neq \mathrm{sgn}(\Delta\theta_{i-1})\right\}\right| \geq n_{\min}$$
+$$C_{\text{zz}} = \#\left\{i : \text{evento qualificado} \wedge \mathrm{sgn}(\Delta\theta_i) \neq \mathrm{sgn}(\Delta\theta_{i-1})\right\} \geq n_{\min}$$
 
 com $\theta_{\lim} = 15°$, $a_{c,\lim} = 0{,}3\ \text{m/s}^2$ e $n_{\min} = 3$. A exigência de alternância distingue zigue-zague (esquerda–direita–esquerda) de curvas contínuas no mesmo sentido. A aceleração centrípeta $v^2/R$ é calculada diretamente dos dados OBD+GPS sem assumir $\mu$.
 
@@ -175,9 +175,9 @@ A janela é adicionalmente filtrada para excluir pontos com `curva=True`, evitan
 
 Dois contadores de evento são computados diretamente dos sensores na janela pré-curva, sem depender dos rótulos de caracterização:
 
-$$n_{\text{accel}} = \left|\left\{t \in W : \sqrt{a_x(t)^2 + a_y(t)^2} > \alpha\mu g\right\}\right|$$
+$$n_{\text{accel}} = \#\left\{t \in W : \sqrt{a_x(t)^2 + a_y(t)^2} > \alpha\mu g\right\}$$
 
-$$n_{\text{lateral}} = \left|\left\{t \in W : |a_y(t)| > a_{y,\lim}\right\}\right|$$
+$$n_{\text{lateral}} = \#\left\{t \in W : |a_y(t)| > a_{y,\lim}\right\}$$
 
 com os mesmos limiares dos Critérios 1 e 2. Esses contadores capturam a intensidade e frequência do comportamento de risco na aproximação à curva, complementando as estatísticas escalares de F1.
 
