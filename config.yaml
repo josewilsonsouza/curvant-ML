@@ -71,32 +71,13 @@ ml:
 
 neural_networks:
   mlp_sklearn:
-    hidden_layer_sizes: [128, 64]
+    hidden_layer_sizes: [[128, 64], [256, 128, 64]]  # candidatos para GridSearchCV
     activation: relu
     solver: adam
     alpha: 0.001
     max_iter: 2000
-  mlp_keras:
-    hidden_layers: [64, 64, 64]
-    dropout: 0.3
-    epochs: 150
-    batch_size: 32
-    validation_split: 0.2
-  gru:
-    units: [3, 2]
-    janela_tempo: 1
-    epochs: 10
-    batch_size: 50
-    validation_split: 0.2
-  lstm:
-    units: [64, 32]
-    dropout: 0.3
-    janela_tempo: 1
-    epochs: 20
-    batch_size: 32
-    validation_split: 0.2
   multitask_mlp:
-    epochs: 200
+    epochs: 400
     batch_size: 32
     lr: 0.0005
 
@@ -104,3 +85,33 @@ optuna:
   n_trials_xgb: 50    # trials para XGBoost
   n_trials_rf: 30     # trials para RandomForest
   timeout: 300        # segundos máximos por otimização (interrompe antes de acabar os trials)
+
+time_series_regression:
+  model: [rf,xgboost,linear]          # string ou lista — gru | lstm | cnn1d | mlp | linear | rf | xgboost
+  # exemplos de lista: model: [gru, rf, xgboost]
+  task: auto                  # auto (detecta pelo target) | regression | classification
+  target: isl_mean
+  # Regressão:       curve_accel_y_max | curve_accel_y_mean | curve_abs_accel_max | isl_max | isl_mean
+  # Classificação:   manobra_combinado_curva | manobra_accel_curva | manobra_lateral_curva
+  #                  manobra_ziguezague_curva | isl_class
+  sensors:
+    - vehicle_speed
+    - accel_x
+    - accel_y
+    - engine_rpm
+    - raio_curvatura        # raio GPS da abordagem — correlato do raio da curva seguinte
+  scalares_extras:          # colunas de features_df adicionadas como canais constantes
+    - f3_janela_raio_min    # raio mínimo na janela pré-curva
+    - f3_janela_raio_mean   # raio médio na janela pré-curva
+  target_cap_percentil: 99  # remove extremos clipados (null = sem filtro)
+  n_timesteps: 50     # comprimento fixo após reamostragem da janela pré-curva
+  epochs: 400
+  batch_size: 32
+  lr: 0.001
+  dropout: 0.3
+  # GRU / LSTM
+  hidden_size: 64
+  n_layers: 1
+  # CNN1D
+  channels: [32, 64]
+  kernel_size: 3

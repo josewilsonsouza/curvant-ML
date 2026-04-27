@@ -200,9 +200,8 @@ def aplicar_modelos_ml(
 
     linhas = []
     for nome, clf in modelos.items():
-        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components)
+        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components, use_smote=True)
 
-        # cross_validate sobre X_train bruto — SMOTE contido em cada fold pelo ImbPipeline
         cv_res = cross_validate(
             pipe, X_train, y_train, cv=cv, groups=groups_train,
             scoring={'acc': 'accuracy', 'f1': f'f1_{f1_average}'},
@@ -266,12 +265,20 @@ def treinar_mlp_sklearn(
     random_state: int = 42,
     test_size: float = 0.3,
     pca_n_components=None,
+    hidden_layer_sizes=None,
+    activation: str = 'relu',
+    solver: str = 'adam',
+    alpha: float = 0.001,
+    max_iter: int = 2000,
 ) -> MLPClassifier:
     """
     Treina MLPClassifier com GridSearchCV.
     SMOTE, StandardScaler e PCA aplicados apenas no conjunto de treino.
     GridSearchCV usa f1_weighted (mais adequado que accuracy para dados desbalanceados).
     """
+    if hidden_layer_sizes is None:
+        hidden_layer_sizes = [(128, 64)]
+
     X, y = _preparar_xy(df)
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state, stratify=y,
@@ -279,14 +286,17 @@ def treinar_mlp_sklearn(
 
     X_train_pp, X_test_pp, y_train_pp = _preproc_train_test(
         X_train, X_test, y_train,
-        use_smote=True, random_state=random_state, pca_n_components=pca_n_components,
+        use_smote=False, random_state=random_state, pca_n_components=pca_n_components,
     )
 
+    # Normaliza hidden_layer_sizes: aceita listas de listas ou lista simples
+    if hidden_layer_sizes and not isinstance(hidden_layer_sizes[0], (list, tuple)):
+        hidden_layer_sizes = [hidden_layer_sizes]
     param_grid = {
-        'hidden_layer_sizes': [(128, 64)],
-        'activation': ['relu'],
-        'solver': ['adam'],
-        'alpha': [0.0001],
+        'hidden_layer_sizes': [tuple(h) for h in hidden_layer_sizes],
+        'activation': [activation],
+        'solver': [solver],
+        'alpha': [alpha],
         'learning_rate': ['constant'],
     }
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
@@ -366,8 +376,6 @@ def preparar_dados_keras(
     X_train, X_val, y_train, y_val = train_test_split(
         X_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train,
     )
-
-    X_train, y_train = SMOTE(random_state=random_state).fit_resample(X_train, y_train)
 
     scaler = StandardScaler()
     X_train = scaler.fit_transform(X_train)
@@ -650,7 +658,7 @@ def aplicar_modelos_ml_otimizados(
 
     linhas = []
     for nome, clf in modelos.items():
-        pipe   = _construir_pipeline(clf, random_state=random_state)
+        pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=True)
         cv_res = cross_validate(
             pipe, X_train, y_train, cv=cv, groups=groups_train,
             scoring={'acc': 'accuracy', 'f1': f'f1_{f1_average}'},
@@ -770,7 +778,7 @@ def treinar_modelo_isl(
 
     linhas = []
     for nome, clf in modelos.items():
-        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components)
+        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components, use_smote=True)
 
         cv_res = cross_validate(
             pipe, X_train, y_train, cv=cv,

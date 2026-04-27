@@ -238,6 +238,12 @@ def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Dat
     return resultados
 
 
+def etapa_regressao_ts(df_analysis: pd.DataFrame, features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
+    """Regressão de série temporal (GRU / LSTM / CNN1D) sobre dados brutos da janela pré-curva."""
+    from src.models_ts import treinar_regressao_ts
+    treinar_regressao_ts(df_analysis, features_df, cfg, plot=plot)
+
+
 def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
     """Treina o MLP multi-tarefa PyTorch com split por id_route."""
     from src.models_pytorch import treinar_multitask_mlp
@@ -259,12 +265,18 @@ def etapa_mlp_sklearn(features_df: pd.DataFrame, cfg: dict) -> None:
     """MLP sklearn com GridSearchCV."""
     from src.models import treinar_mlp_sklearn
 
-    ml = cfg['ml']
+    ml     = cfg['ml']
+    sk_cfg = cfg.get('neural_networks', {}).get('mlp_sklearn', {})
     treinar_mlp_sklearn(
         features_df,
         random_state=ml['random_state'],
         test_size=ml['test_size'],
         pca_n_components=ml.get('pca_n_components'),
+        hidden_layer_sizes=sk_cfg.get('hidden_layer_sizes'),
+        activation=sk_cfg.get('activation', 'relu'),
+        solver=sk_cfg.get('solver', 'adam'),
+        alpha=sk_cfg.get('alpha', 0.001),
+        max_iter=sk_cfg.get('max_iter', 2000),
     )
 
 

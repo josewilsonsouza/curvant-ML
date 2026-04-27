@@ -1,18 +1,24 @@
 """
 CurvantML — Deep learning multi-tarefa em PyTorch.
-Substitui os modelos Keras (MLP, GRU, LSTM).
 
-Arquitetura principal: MultiTaskMLP com encoder compartilhado e cinco heads:
-  - isl_value       (regressão, MSELoss)
-  - isl_class       (3 classes, CrossEntropyLoss)
-  - manobra_accel_curva, manobra_lateral_curva, manobra_ziguezague_curva (binário, BCELoss)
+MultiTaskMLP: encoder compartilhado (256→128) + quatro heads independentes:
+  - isl_class                (3 classes, CrossEntropyLoss)
+  - manobra_accel_curva      (binário, BCELoss)
+  - manobra_lateral_curva    (binário, BCELoss)
+  - manobra_ziguezague_curva (binário, BCELoss)
+
+Regressão de série temporal (curve_accel_y_max) tratada separadamente
+em modelos_ts.py, que opera sobre dados brutos da janela pré-curva.
 """
 
+import os
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import f1_score, r2_score
+from sklearn.metrics import confusion_matrix, f1_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
@@ -20,11 +26,12 @@ from torch.utils.data import DataLoader, Dataset
 from src.models import _COLS_EXCLUIR, _base_route
 
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
+_ISL_LABELS  = {0: 'baixo', 1: 'medio', 2: 'alto'}
 
 _TARGETS_BINARIOS = [
     'manobra_accel_curva', 'manobra_lateral_curva', 'manobra_ziguezague_curva',
 ]
-_TARGETS_TODOS = ['isl_value', 'isl_class'] + _TARGETS_BINARIOS
+_TARGETS_TODOS = ['isl_class'] + _TARGETS_BINARIOS
 
 
 class CurvantDataset(Dataset):
@@ -48,7 +55,7 @@ class CurvantDataset(Dataset):
 
 class MultiTaskMLP(nn.Module):
     """
-    MLP multi-tarefa: encoder compartilhado (256→128) + cinco heads independentes.
+    MLP multi-tarefa: encoder compartilhado (256→128) + quatro heads independentes.
     Entrada: vetor de features F1-F5 (normalizado externamente).
     """
 
@@ -58,9 +65,6 @@ class MultiTaskMLP(nn.Module):
             nn.BatchNorm1d(n_features),
             nn.Linear(n_features, 256), nn.ReLU(), nn.Dropout(0.3),
             nn.Linear(256, 128),        nn.ReLU(), nn.Dropout(0.3),
-        )
-        self.head_isl_value = nn.Sequential(
-            nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 1)
         )
         self.head_isl_class = nn.Sequential(
             nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 3)
@@ -72,7 +76,6 @@ class MultiTaskMLP(nn.Module):
     def forward(self, x: torch.Tensor) -> dict:
         z = self.encoder(x)
         return {
-            'isl_value':                self.head_isl_value(z).squeeze(-1),
             'isl_class':                self.head_isl_class(z),
             'manobra_accel_curva':      self.head_accel(z).squeeze(-1),
             'manobra_lateral_curva':    self.head_lateral(z).squeeze(-1),
@@ -83,14 +86,20 @@ class MultiTaskMLP(nn.Module):
 def _preparar_targets(df: pd.DataFrame) -> dict:
     """Extrai e codifica os alvos disponíveis no DataFrame."""
     targets = {}
-    if 'isl_value' in df.columns:
-        targets['isl_value'] = df['isl_value'].fillna(0.0).values
     if 'isl_class' in df.columns:
         targets['isl_class'] = df['isl_class'].map(_ISL_ENCODE).fillna(0).values
     for col in _TARGETS_BINARIOS:
         if col in df.columns:
             targets[col] = df[col].fillna(0).values
     return targets
+
+
+_LAMBDAS_PADRAO = {
+    'isl_class':                1.0,
+    'manobra_accel_curva':      1.0,
+    'manobra_lateral_curva':    1.0,
+    'manobra_ziguezague_curva': 1.0,
+}
 
 
 def treinar_multitask_mlp(
@@ -105,11 +114,12 @@ def treinar_multitask_mlp(
     """
     Treina o MultiTaskMLP com split por id_route.
 
-    lambdas: pesos por loss. Se None, todos 1.0.
+    lambdas: pesos por loss. Se None, usa _LAMBDAS_PADRAO (todos 1.0).
+    Scheduler: ReduceLROnPlateau(patience=50, factor=0.5).
     Retorna o modelo treinado.
     """
     if lambdas is None:
-        lambdas = {k: 1.0 for k in _TARGETS_TODOS}
+        lambdas = _LAMBDAS_PADRAO.copy()
 
     feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
     id_routes    = df['id_route'].astype(str)
@@ -138,9 +148,11 @@ def treinar_multitask_mlp(
 
     model     = MultiTaskMLP(n_features=X_train.shape[1])
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode='min', factor=0.5, patience=50,
+    )
 
     loss_fns = {
-        'isl_value':                nn.MSELoss(),
         'isl_class':                nn.CrossEntropyLoss(),
         'manobra_accel_curva':      nn.BCELoss(),
         'manobra_lateral_curva':    nn.BCELoss(),
@@ -168,8 +180,10 @@ def treinar_multitask_mlp(
                 epoch_loss += loss_sum.item()
         loss_medio = epoch_loss / len(train_loader)
         historico_loss.append(loss_medio)
+        scheduler.step(loss_medio)
         if (epoch + 1) % 20 == 0:
-            print(f"    Época {epoch + 1}/{epochs} — Loss médio: {loss_medio:.4f}")
+            lr_atual = optimizer.param_groups[0]['lr']
+            print(f"    Época {epoch + 1}/{epochs} — Loss: {loss_medio:.4f}  LR: {lr_atual:.2e}")
 
     from graphics.visualization import plotar_loss_pytorch
     plotar_loss_pytorch(historico_loss, nome='multitask_mlp')
@@ -178,19 +192,52 @@ def treinar_multitask_mlp(
     with torch.no_grad():
         preds_test = model(torch.FloatTensor(X_test))
 
+    os.makedirs('results', exist_ok=True)
     print("\n  MultiTaskMLP — Métricas (teste, split por rota):")
     for key in target_cols_presentes:
         if key not in preds_test or key not in test_targets:
             continue
         p = preds_test[key].numpy()
         y = test_targets[key]
-        if key == 'isl_value':
-            print(f"    isl_value   R²: {r2_score(y, p):.4f}")
-        elif key == 'isl_class':
+
+        if key == 'isl_class':
             pred_labels = np.argmax(p, axis=1)
-            print(f"    isl_class   F1-macro: {f1_score(y.astype(int), pred_labels, average='macro', zero_division=0):.4f}")
+            f1 = f1_score(y.astype(int), pred_labels, average='macro', zero_division=0)
+            print(f"    isl_class   F1-macro: {f1:.4f}")
+            cm = confusion_matrix(y.astype(int), pred_labels)
+            fig, ax = plt.subplots(figsize=(4, 3))
+            im = ax.imshow(cm, cmap='Blues')
+            ticks = [_ISL_LABELS[i] for i in range(3)]
+            ax.set_xticks(range(3)); ax.set_xticklabels(ticks)
+            ax.set_yticks(range(3)); ax.set_yticklabels(ticks)
+            for i in range(3):
+                for j in range(3):
+                    ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+            ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
+            ax.set_title(f'PyTorch — isl_class  F1={f1:.3f}')
+            fig.colorbar(im, ax=ax)
+            fig.tight_layout()
+            fig.savefig('results/pytorch_cm_isl_class.pdf', bbox_inches='tight')
+            plt.close(fig)
+
         else:
             pred_labels = (p > 0.5).astype(int)
-            print(f"    {key:<30s} F1: {f1_score(y.astype(int), pred_labels, average='weighted', zero_division=0):.4f}")
+            f1 = f1_score(y.astype(int), pred_labels, average='weighted', zero_division=0)
+            print(f"    {key:<30s} F1: {f1:.4f}")
+            cm = confusion_matrix(y.astype(int), pred_labels)
+            fig, ax = plt.subplots(figsize=(3, 3))
+            im = ax.imshow(cm, cmap='Blues')
+            for i in range(2):
+                for j in range(2):
+                    ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=10)
+            ax.set_xticks([0, 1]); ax.set_xticklabels(['Segura', 'Risco'])
+            ax.set_yticks([0, 1]); ax.set_yticklabels(['Segura', 'Risco'])
+            ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
+            short = key.replace('manobra_', '').replace('_curva', '')
+            ax.set_title(f'PyTorch — {short}  F1={f1:.3f}')
+            fig.colorbar(im, ax=ax)
+            fig.tight_layout()
+            fig.savefig(f'results/pytorch_cm_{short}.pdf', bbox_inches='tight')
+            plt.close(fig)
 
     return model

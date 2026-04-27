@@ -15,24 +15,44 @@ pip install -e ".[dev]"
 python scripts/preprocess_data.py --input data/eletro_rjdf_serra_rjmgba_janeiro.parquet
 
 # 2. Pipeline completo
-python scripts/run.py                            # modelos clássicos, Modo 1
+python scripts/run.py                            # modelos clássicos (padrão), Modo 1
+python scripts/run.py --classical                # modelos clássicos (explícito)
 python scripts/run.py --plot                     # + gráficos e matrizes de confusão
 python scripts/run.py --isl                      # + ISL 3 classes + regressão P1
 python scripts/run.py --optuna                   # + Optuna (XGBoost e RandomForest)
 python scripts/run.py --pytorch                  # + MLP multi-tarefa PyTorch
 python scripts/run.py --mlp                      # + MLP sklearn (GridSearchCV)
+python scripts/run.py --ts                       # + modelos de série temporal (dados brutos)
+python scripts/run.py --ts --rebuild             # força reprocessamento das etapas 1–5
 python scripts/run.py --modo modo2               # Modo 2: sem geometria da curva seguinte
-python scripts/run.py --isl --pytorch --plot     # combinação completa
+python scripts/run.py --isl --pytorch --ts --plot  # combinação completa
 ```
+
+As etapas de pré-processamento (1–5) são cacheadas automaticamente em `data/.cache_*.parquet` após a primeira execução. Use `--rebuild` para invalidar o cache (necessário ao mudar parâmetros de `config.yaml` que afetam a detecção de curvas ou extração de features).
 
 ## Dois modos de pipeline
 
-| Modo | Features F4 (geometria da curva) | Caso de uso |
-|------|----------------------------------|-------------|
-| `modo1` (padrão) | ✓ incluídas (`f4_raio_min`, `f4_raio_mean`, `f4_dnit_num`) | Rota conhecida — trace GPS completo disponível |
-| `modo2` | ✗ zeradas (NaN -> 0) | Rota desconhecida — apenas OBD + posição atual |
+O pipeline opera em dois modos que diferem na disponibilidade da geometria real da curva seguinte:
 
-Um único modelo é treinado com `modo_rota_conhecida` (0/1) como feature, permitindo que aprenda a diferença de confiança entre os dois cenários.
+| Modo | Features F4 | Caso de uso |
+|------|-------------|-------------|
+| `modo1` (padrão) | ✓ incluídas: `f4_raio_min`, `f4_raio_mean`, `f4_dnit_num` | **Rota conhecida** — trace GPS completo pré-mapeado |
+| `modo2` | ✗ zeradas (NaN → 0) | **Rota desconhecida** — apenas OBD + posição atual |
+
+### O que são as features F4
+
+As features F4 descrevem a **geometria real da curva que o veículo está prestes a entrar** — raio mínimo, raio médio e classe DNIT — extraídas do traço GPS completo do trajeto. Elas representam informação que só existe quando a rota foi percorrida antes (navegação, frotas com rotas fixas, análise offline).
+
+No **Modo 2**, essas três colunas são zeradas antes do treinamento e da inferência: o modelo opera apenas com o comportamento do motorista na abordagem (features F1–F3 e F5) e a geometria estimada localmente (F3), sem conhecer o raio da próxima curva.
+
+### Um modelo, dois contextos
+
+Um único modelo é treinado com os dados de ambos os modos, usando `modo_rota_conhecida` (1 = Modo 1, 0 = Modo 2) como feature explícita. Isso permite que o modelo:
+
+- **aprenda a explorar F4** quando a geometria está disponível (Modo 1), produzindo previsões mais precisas;
+- **recaia graciosamente** sobre as features de comportamento quando F4 = 0 (Modo 2), sem precisar de um modelo separado.
+
+O custo do Modo 2 é uma queda esperada no desempenho de classificação — o modelo passa a depender inteiramente de sinais como velocidade de entrada, jerk e histórico de curvas anteriores para antecipar o risco.
 
 ## Métodos de caracterização de risco
 
@@ -119,7 +139,7 @@ O ISL é calculado nos pontos com `curva=True` dentro de cada curva detectada e 
 | `manobra_ziguezague_curva` | GPS | Binário | $\geq 3$ eventos de bearing + accel centrípeta |
 | `manobra_combinado_curva` | — | Binário | OR dos três acima (target principal dos classificadores) |
 | `isl_class` | OBD + GPS | 3 classes | ISL $= v^2/(R g \mu)$, classes baixo/médio/alto |
-| `isl_value` | OBD + GPS | Regressão | Valor contínuo de ISL |
+| `isl_max` | OBD + GPS | Regressão | Valor máximo de ISL dentro da curva (contínuo) |
 | `v_excess` | OBD + GPS | Binário | $v_{\text{entry}} > v_{\text{safe}}(R) = \sqrt{Rg\mu}\cdot 3{,}6$ |
 
 ## Janelas de análise
@@ -210,12 +230,17 @@ Modelos
   │   ├── ISL 3 classes    target: isl_class (baixo/medio/alto)
   │   └── P1 regressão     target: curve_accel_y_max / curve_abs_accel_max
   │
-  └── --pytorch            MultiTaskMLP (encoder 256->128 + 5 heads)
-      ├── head isl_value   regressão  (MSELoss)
-      ├── head isl_class   3 classes  (CrossEntropyLoss)
-      ├── head manobra_accel_curva    (BCELoss)
-      ├── head manobra_lateral_curva  (BCELoss)
-      └── head manobra_zz_curva       (BCELoss)
+  ├── --pytorch            MultiTaskMLP (encoder 256->128 + 4 heads)
+  │   ├── head isl_class          3 classes  (CrossEntropyLoss)
+  │   ├── head manobra_accel_curva           (BCELoss)
+  │   ├── head manobra_lateral_curva         (BCELoss)
+  │   └── head manobra_zz_curva              (BCELoss)
+  │
+  └── --ts                 Série temporal (dados brutos da janela pré-curva)
+      ├── Neurais          GRU, LSTM, CNN1D, MLP
+      │                    n_timesteps=50 pontos reamostrados; alvo normalizado por rota
+      └── Clássicos        RF, XGBoost, linear (features estatísticas da janela)
+                           target e task configuráveis em config.yaml
 ```
 
 ## Modelos e tuning
@@ -234,34 +259,67 @@ optuna:
   timeout: 300        # segundos máximos por otimização
 ```
 
+### Série temporal (`--ts`)
+
+Opera sobre a sequência bruta de pontos GPS+OBD da janela pré-curva, sem reduzir para estatísticas escalares. A janela é reamostrada para `n_timesteps=50` pontos uniformes; cada ponto tem os canais definidos em `sensors` (ex. `vehicle_speed`, `accel_x/y`, `engine_rpm`, `raio_curvatura`). Features escalares de `features_df` (como `f3_janela_raio_min`) são adicionadas como canais constantes ao longo da sequência via `scalares_extras`. Um canal `prev_{target}` (valor do target na curva anterior da mesma rota) é adicionado automaticamente como entrada autorregressiva.
+
+O target e o tipo de tarefa são configuráveis em `config.yaml`:
+
+```yaml
+time_series_regression:
+  model: [rf, xgboost, linear]   # ou: gru | lstm | cnn1d | mlp
+  task: auto                      # auto | regression | classification
+  target: isl_mean
+```
+
+**Modelos disponíveis:**
+
+| Modelo | Tipo | Detalhes |
+|---|---|---|
+| `gru` | Neural | GRU recorrente, `hidden_size` camadas, `n_layers` profundidade |
+| `lstm` | Neural | LSTM recorrente, mesma configuração do GRU |
+| `cnn1d` | Neural | Convoluções 1D com canais `[32, 64]` + pooling global |
+| `mlp` | Neural | MLP simples sobre sequência achatada |
+| `rf` | Clássico | RandomForest sobre features estatísticas da sequência |
+| `xgboost` | Clássico | XGBoost sobre features estatísticas da sequência |
+| `linear` | Clássico | Ridge (regressão) ou LogisticRegression (classificação) |
+
+O split treino/teste é feito por rota base com estratificação pelo mediano do target por rota. Para regressão, o target é normalizado por rota (StandardScaler) antes do treino e desnormalizado após a predição, para reduzir shift de distribuição entre trajetos.
+
 ### PyTorch multi-tarefa (`--pytorch`)
 
 A ideia central é que todas as tarefas de previsão compartilham a mesma representação interna da curva. Um encoder aprende features úteis para todas as tarefas simultaneamente; cada head especializa essa representação para seu objetivo específico.
 
 **Arquitetura:**
 
-```
-x ∈ ℝⁿ  (features F1–F5, padronizadas)
-    │
-    ▼  BatchNorm1d(n)
-    ▼  Linear(n -> 256) -> ReLU -> Dropout(0.3)
-    ▼  Linear(256 -> 128) -> ReLU -> Dropout(0.3)
-    │
-    z ∈ ℝ¹²⁸  (representação compartilhada)
-    │
-    ├── head_isl_value   Linear(128->64)->ReLU->Linear(64->1)           ŷ ∈ ℝ
-    ├── head_isl_class   Linear(128->64)->ReLU->Linear(64->3)           ŷ ∈ ℝ³
-    ├── head_accel       Linear(128->64)->ReLU->Linear(64->1)->Sigmoid   ŷ ∈ (0,1)
-    ├── head_lateral     Linear(128->64)->ReLU->Linear(64->1)->Sigmoid   ŷ ∈ (0,1)
-    └── head_zz          Linear(128->64)->ReLU->Linear(64->1)->Sigmoid   ŷ ∈ (0,1)
-```
+**Encoder compartilhado** — $\mathbf{x} \in \mathbb{R}^{n}$ (features F1–F5 padronizadas):
+
+$$
+\mathbf{z} = f_{\mathrm{enc}}(\mathbf{x}) \in \mathbb{R}^{128}, \qquad
+f_{\mathrm{enc}}(\mathbf{x}) = \mathrm{Drop}_{0.3}\!\Bigl(\mathrm{ReLU}\bigl(W_2\,\mathrm{Drop}_{0.3}(\mathrm{ReLU}(W_1\,\mathrm{BN}(\mathbf{x})))\bigr)\Bigr)
+$$
+
+com $W_1 \in \mathbb{R}^{256 \times n}$ e $W_2 \in \mathbb{R}^{128 \times 256}$.
+
+**Heads independentes** — aplicados sobre a representação $\mathbf{z}$:
+
+$$
+\hat{y}_{\mathrm{isl\_class}} = W_{\mathrm{isl}}^{(2)}\,\mathrm{ReLU}\!\left(W_{\mathrm{isl}}^{(1)}\,\mathbf{z}\right) \in \mathbb{R}^{3}
+$$
+
+$$
+\hat{y}_{k} = \sigma\!\left(W_{k}^{(2)}\,\mathrm{ReLU}\!\left(W_{k}^{(1)}\,\mathbf{z}\right)\right) \in (0,1), \qquad k \in \{\mathrm{accel},\,\mathrm{lateral},\,\mathrm{zz}\}
+$$
+
+com $W_{\cdot}^{(1)} \in \mathbb{R}^{64 \times 128}$ e $W_{\cdot}^{(2)} \in \mathbb{R}^{d_{\mathrm{out}} \times 64}$ ($d_{\mathrm{out}} = 3$ para `isl_class`, $d_{\mathrm{out}} = 1$ para os demais).
 
 **Loss total:**
 
-$$L = \lambda_1\,\mathcal{L}_{\text{MSE}}(\hat{y}_{\text{isl\_value}},\,y_{\text{isl\_value}}) + \lambda_2\,\mathcal{L}_{\text{CE}}(\hat{y}_{\text{isl\_class}},\,y_{\text{isl\_class}}) + \sum_{k \in \{\text{accel, lateral, zz}\}} \lambda_k\,\mathcal{L}_{\text{BCE}}(\hat{y}_k, y_k)$$
+$$L = \lambda_1\,\mathcal{L}_{\text{CE}}(\hat{y}_{\text{isl\_class}},\,y_{\text{isl\_class}}) + \sum_{k \in \{\text{accel, lateral, zz}\}} \lambda_k\,\mathcal{L}_{\text{BCE}}(\hat{y}_k, y_k)$$
 
-com $\lambda_i = 1{,}0$ por padrão (configurável via `lambdas`). Um único `backward()` por batch propaga o gradiente de todas as tarefas pelo encoder compartilhado.
-Prever ISL e zigue-zague ao mesmo tempo força o encoder a aprender representações mais gerais, reduzindo overfitting. Tarefas correlacionadas (ex. ISL alto ↔ `manobra_accel`) reforçam mutuamente o gradiente do encoder. Uma única passagem pelo modelo retorna todas as estimativas de risco simultaneamente
+com $\lambda_i = 1{,}0$ para todas as tarefas (configurável via `lambdas`). Um único `backward()` por batch propaga o gradiente de todas as tarefas pelo encoder compartilhado.
+
+**Scheduler:** `ReduceLROnPlateau(patience=50, factor=0.5)` — reduz a LR à metade quando a loss não melhora por 50 épocas consecutivas. O patience longo evita reduções prematuras causadas por ruído de batch. Prever ISL e zigue-zague ao mesmo tempo força o encoder a aprender representações mais gerais, reduzindo overfitting. Tarefas correlacionadas (ex. ISL alto ↔ `manobra_accel`) reforçam mutuamente o gradiente do encoder. Uma única passagem retorna todas as estimativas de risco simultaneamente.
 
 Curva de loss salva automaticamente em `results/pytorch_loss_multitask_mlp.pdf`.
 
@@ -280,11 +338,23 @@ Curva de loss salva automaticamente em `results/pytorch_loss_multitask_mlp.pdf`.
 | `janela_distancia_max` | `features` | `400` | Distância máxima da janela dinâmica (m) |
 | `isl_max_cap_percentil` | `ml` | `99` | Remove outliers extremos de ISL antes de treinar |
 | `pca_n_components` | `ml` | `null` | PCA após SMOTE+Scaler (`null` = desativado) |
-| `epochs` | `neural_networks.multitask_mlp` | `200` | Épocas de treino PyTorch |
+| `epochs` | `neural_networks.multitask_mlp` | `400` | Épocas de treino PyTorch |
 | `lr` | `neural_networks.multitask_mlp` | `0.0005` | Learning rate Adam |
 | `n_trials_xgb` | `optuna` | `50` | Trials Optuna para XGBoost |
 | `n_trials_rf` | `optuna` | `30` | Trials Optuna para RandomForest |
 | `timeout` | `optuna` | `300` | Tempo máximo por otimização (s) |
+| `model` | `time_series_regression` | `[rf, xgboost, linear]` | Modelos a treinar — lista ou string: `gru`, `lstm`, `cnn1d`, `mlp`, `linear`, `rf`, `xgboost` |
+| `task` | `time_series_regression` | `auto` | `auto` (detecta pelo target), `regression` ou `classification` |
+| `target` | `time_series_regression` | `isl_mean` | Variável alvo — regressão: `isl_mean`, `isl_max`, `curve_accel_y_max`, `curve_accel_y_mean`, `curve_abs_accel_max`; classificação: `manobra_combinado_curva`, `isl_class`, etc. |
+| `sensors` | `time_series_regression` | `[vehicle_speed, accel_x, accel_y, engine_rpm, raio_curvatura]` | Canais temporais da janela pré-curva (cada coluna vira uma dimensão da sequência) |
+| `scalares_extras` | `time_series_regression` | `[f3_janela_raio_min, f3_janela_raio_mean]` | Colunas de `features_df` adicionadas como canais constantes ao longo da sequência |
+| `target_cap_percentil` | `time_series_regression` | `99` | Remove amostras com target acima desse percentil antes de treinar (`null` = sem filtro) |
+| `n_timesteps` | `time_series_regression` | `50` | Comprimento fixo após reamostagem da janela pré-curva |
+| `epochs` | `time_series_regression` | `400` | Épocas de treino (modelos neurais) |
+| `hidden_size` | `time_series_regression` | `64` | Dimensão oculta do GRU/LSTM |
+| `n_layers` | `time_series_regression` | `1` | Número de camadas recorrentes (GRU/LSTM) |
+| `channels` | `time_series_regression` | `[32, 64]` | Canais das camadas CNN1D |
+| `dropout` | `time_series_regression` | `0.3` | Taxa de dropout (modelos neurais) |
 
 ## Dados
 

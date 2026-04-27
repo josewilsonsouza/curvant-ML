@@ -1,0 +1,586 @@
+"""
+CurvantML — Modelos de série temporal: regressão e classificação.
+
+Opera sobre dados brutos da janela pré-curva (não estatísticas agregadas).
+Modelos configuráveis via config.yaml > time_series_regression > model
+(string simples ou lista):
+
+  Neurais (dados sequenciais):
+    gru   — GRU unidirecional
+    lstm  — LSTM unidirecional
+    cnn1d — 1D CNN com pooling adaptativo
+    mlp   — MLP com flatten (baseline sem modelagem temporal)
+
+  Clássicos (sequências achatadas, n_timesteps × n_sensors features):
+    linear  — Ridge Regression (regressão) / Logistic Regression (classificação)
+    rf      — Random Forest
+    xgboost — XGBoost
+
+Tarefa configurável via config.yaml > time_series_regression > task:
+    regression     — MSE / R² / MAE
+    classification — CrossEntropy ou BCE / F1
+
+Targets de regressão:  curve_accel_y_max | curve_accel_y_mean | curve_abs_accel_max | isl_max | isl_mean
+Targets de classificação: manobra_combinado_curva | manobra_accel_curva |
+                          manobra_lateral_curva | manobra_ziguezague_curva | isl_class
+"""
+
+import os
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import (
+    accuracy_score, confusion_matrix, f1_score,
+    mean_absolute_error, r2_score,
+)
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from torch.utils.data import DataLoader, TensorDataset
+
+try:
+    from xgboost import XGBClassifier as _XGBClassifier
+    from xgboost import XGBRegressor as _XGBRegressor
+    _HAS_XGB = True
+except ImportError:
+    _HAS_XGB = False
+
+from src.models import _base_route
+
+_SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
+
+_ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
+
+# Targets de classificação e número de classes
+_TARGETS_BINARIOS_TS  = {
+    'manobra_combinado_curva', 'manobra_accel_curva',
+    'manobra_lateral_curva', 'manobra_ziguezague_curva',
+}
+_TARGETS_MULTICLASS_TS = {'isl_class': 3}
+_TARGETS_CLASSIF_TS    = _TARGETS_BINARIOS_TS | set(_TARGETS_MULTICLASS_TS)
+
+
+def _detectar_task(target: str, task_cfg: str) -> tuple[str, int]:
+    """Retorna (task, n_classes): task='regression'|'classification', n_classes=1|2|3."""
+    if task_cfg == 'classification' or target in _TARGETS_CLASSIF_TS:
+        if target in _TARGETS_MULTICLASS_TS:
+            return 'classification', _TARGETS_MULTICLASS_TS[target]
+        return 'classification', 2
+    return 'regression', 1
+
+
+# ── Extração de sequências ─────────────────────────────────────────────────────
+
+def extrair_sequencias_precurva(
+    df_analysis: pd.DataFrame,
+    features_df: pd.DataFrame,
+    sensors: list[str],
+    n_timesteps: int,
+    target: str = 'curve_accel_y_max',
+    scalares_extras: list[str] | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Para cada curva em features_df extrai a série temporal da janela pré-curva
+    de df_analysis (usando time_inicio/time_fim) e reamostrada para n_timesteps.
+
+    scalares_extras: colunas de features_df adicionadas como canais constantes
+    (mesmo valor em todos os timesteps).
+
+    Retorna:
+        X        — (n, n_timesteps, n_sensors [+ n_extras]) float32
+        y        — (n,) float32
+        id_route — (n,) str
+    """
+    sensors_disponiveis = [s for s in sensors if s in df_analysis.columns]
+    extras = [c for c in (scalares_extras or []) if c in features_df.columns]
+    x_new  = np.linspace(0, 1, n_timesteps)
+
+    grupos = {
+        rota: sub[sensors_disponiveis + ['time_sec']].reset_index(drop=True)
+        for rota, sub in df_analysis.groupby('id_route')
+    }
+
+    sequences, targets, rotas = [], [], []
+
+    for _, row in features_df.iterrows():
+        if pd.isna(row.get(target)):
+            continue
+        t0 = row.get('time_inicio')
+        t1 = row.get('time_fim')
+        if pd.isna(t0) or pd.isna(t1):
+            continue
+
+        sub = grupos.get(str(row['id_route']))
+        if sub is None:
+            continue
+
+        mask   = (sub['time_sec'] >= t0) & (sub['time_sec'] <= t1)
+        janela = sub.loc[mask, sensors_disponiveis].values.astype(np.float32)
+
+        if len(janela) < 2:
+            continue
+
+        x_old     = np.linspace(0, 1, len(janela))
+        resampled = np.stack(
+            [np.interp(x_new, x_old, janela[:, j]) for j in range(janela.shape[1])],
+            axis=1,
+        )  # (n_timesteps, n_sensors)
+
+        for col in extras:
+            val = row.get(col)
+            val = 0.0 if pd.isna(val) else float(val)
+            resampled = np.concatenate(
+                [resampled, np.full((n_timesteps, 1), val, dtype=np.float32)],
+                axis=1,
+            )
+
+        sequences.append(resampled)
+        targets.append(float(row[target]))
+        rotas.append(str(row['id_route']))
+
+    if not sequences:
+        raise ValueError("Nenhuma sequência válida extraída. Verifique time_inicio/time_fim em features_df.")
+
+    return np.array(sequences, dtype=np.float32), np.array(targets, dtype=np.float32), np.array(rotas)
+
+
+# ── Modelos neurais ───────────────────────────────────────────────────────────
+
+class GRURegressor(nn.Module):
+    def __init__(self, n_sensors: int, hidden_size: int = 64, n_layers: int = 1,
+                 dropout: float = 0.3, n_out: int = 1):
+        super().__init__()
+        self.gru = nn.GRU(
+            n_sensors, hidden_size, n_layers,
+            batch_first=True, dropout=dropout if n_layers > 1 else 0.0,
+        )
+        self.head = nn.Sequential(
+            nn.Linear(hidden_size, 32), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(32, n_out),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _, h = self.gru(x)
+        return self.head(h[-1]).squeeze(-1)
+
+
+class LSTMRegressor(nn.Module):
+    def __init__(self, n_sensors: int, hidden_size: int = 64, n_layers: int = 1,
+                 dropout: float = 0.3, n_out: int = 1):
+        super().__init__()
+        self.lstm = nn.LSTM(
+            n_sensors, hidden_size, n_layers,
+            batch_first=True, dropout=dropout if n_layers > 1 else 0.0,
+        )
+        self.head = nn.Sequential(
+            nn.Linear(hidden_size, 32), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(32, n_out),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        _, (h, _) = self.lstm(x)
+        return self.head(h[-1]).squeeze(-1)
+
+
+class CNN1DRegressor(nn.Module):
+    def __init__(self, n_sensors: int, channels: list[int] = None,
+                 kernel_size: int = 3, dropout: float = 0.3, n_out: int = 1):
+        super().__init__()
+        if channels is None:
+            channels = [32, 64]
+        layers, in_ch = [], n_sensors
+        for out_ch in channels:
+            layers += [
+                nn.Conv1d(in_ch, out_ch, kernel_size, padding=kernel_size // 2),
+                nn.ReLU(), nn.MaxPool1d(2),
+            ]
+            in_ch = out_ch
+        self.conv    = nn.Sequential(*layers)
+        self.pool    = nn.AdaptiveAvgPool1d(4)
+        self.dropout = nn.Dropout(dropout)
+        self.head    = nn.Sequential(
+            nn.Linear(in_ch * 4, 32), nn.ReLU(),
+            nn.Linear(32, n_out),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x.permute(0, 2, 1)
+        x = self.conv(x)
+        x = self.pool(x).flatten(1)
+        x = self.dropout(x)
+        return self.head(x).squeeze(-1)
+
+
+class MLPRegressor(nn.Module):
+    def __init__(self, n_sensors: int, n_timesteps: int,
+                 hidden_size: int = 128, dropout: float = 0.3, n_out: int = 1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(n_sensors * n_timesteps, hidden_size), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden_size, 64),                      nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(64, n_out),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x).squeeze(-1)
+
+
+_MODELOS_TS   = {'gru': GRURegressor, 'lstm': LSTMRegressor, 'cnn1d': CNN1DRegressor, 'mlp': MLPRegressor}
+_CLASSICOS_TS = {'linear', 'rf', 'xgboost'}
+_TODOS_TS     = set(_MODELOS_TS) | _CLASSICOS_TS
+
+
+# ── Clássicos ─────────────────────────────────────────────────────────────────
+
+def _build_classico(nome: str, rnd: int, task: str):
+    if task == 'classification':
+        if nome == 'linear':
+            return LogisticRegression(max_iter=1000, random_state=rnd)
+        if nome == 'rf':
+            return RandomForestClassifier(n_estimators=200, random_state=rnd, n_jobs=-1)
+        if nome == 'xgboost':
+            if not _HAS_XGB:
+                raise ImportError("xgboost não instalado.")
+            return _XGBClassifier(n_estimators=200, random_state=rnd, verbosity=0, eval_metric='logloss')
+    else:
+        if nome == 'linear':
+            return Ridge()
+        if nome == 'rf':
+            return RandomForestRegressor(n_estimators=200, random_state=rnd, n_jobs=-1)
+        if nome == 'xgboost':
+            if not _HAS_XGB:
+                raise ImportError("xgboost não instalado.")
+            return _XGBRegressor(n_estimators=200, random_state=rnd, verbosity=0)
+    raise ValueError(f"Modelo clássico desconhecido: '{nome}'")
+
+
+def _treinar_um_classico(
+    nome: str,
+    X_train_flat: np.ndarray,
+    X_test_flat: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    target: str,
+    plot: bool,
+    rnd: int,
+    task: str = 'regression',
+    n_classes: int = 1,
+) -> dict:
+    label = {'linear': 'Ridge' if task == 'regression' else 'LogisticReg',
+             'rf': 'RandomForest', 'xgboost': 'XGBoost'}[nome]
+    clf   = _build_classico(nome, rnd, task)
+
+    if task == 'classification':
+        clf.fit(X_train_flat, y_train.astype(int))
+        y_pred = clf.predict(X_test_flat)
+        avg    = 'macro' if n_classes > 2 else 'binary'
+        f1     = f1_score(y_test.astype(int), y_pred, average=avg, zero_division=0)
+        acc    = accuracy_score(y_test.astype(int), y_pred)
+        print(f"  {label:<15s} F1: {f1:.4f}  Acc: {acc:.4f}")
+
+        if plot:
+            os.makedirs('results', exist_ok=True)
+            cm  = confusion_matrix(y_test.astype(int), y_pred)
+            fig, ax = plt.subplots(figsize=(4, 3))
+            im = ax.imshow(cm, cmap='Blues')
+            for i in range(cm.shape[0]):
+                for j in range(cm.shape[1]):
+                    ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+            ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
+            ax.set_title(f'TS {label} — {target}\nF1={f1:.3f}')
+            fig.colorbar(im, ax=ax); fig.tight_layout()
+            fig.savefig(f'results/ts_cm_{nome}_{target}.pdf', bbox_inches='tight')
+            plt.close(fig)
+
+        return {'Modelo': label, 'F1': f1, 'Acc': acc}
+
+    else:
+        clf.fit(X_train_flat, y_train)
+        y_pred = clf.predict(X_test_flat)
+        r2     = r2_score(y_test, y_pred)
+        mae    = mean_absolute_error(y_test, y_pred)
+        print(f"  {label:<15s} R²: {r2:.4f}  MAE: {mae:.4f} m/s²")
+
+        if plot:
+            os.makedirs('results', exist_ok=True)
+            fig, ax = plt.subplots(figsize=(5, 4))
+            ax.scatter(y_test, y_pred, alpha=0.4, s=15)
+            lim = [min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())]
+            ax.plot(lim, lim, 'r--', lw=1)
+            ax.set_xlabel(f'{target} real (m/s²)')
+            ax.set_ylabel(f'{target} previsto (m/s²)')
+            ax.set_title(f'{label} — R²={r2:.3f}  MAE={mae:.3f}')
+            fig.tight_layout()
+            fig.savefig(f'results/ts_scatter_{nome}.pdf', bbox_inches='tight')
+            plt.close(fig)
+
+        return {'Modelo': label, 'R²': r2, 'MAE (m/s²)': mae}
+
+
+# ── Neural ────────────────────────────────────────────────────────────────────
+
+def _treinar_um_neural(
+    model_type: str,
+    X_train: np.ndarray,
+    X_test: np.ndarray,
+    y_train: np.ndarray,
+    y_test: np.ndarray,
+    target: str,
+    plot: bool,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+    hidden: int,
+    n_layers: int,
+    dropout: float,
+    channels: list,
+    kernel: int,
+    n_ts: int,
+    task: str = 'regression',
+    n_classes: int = 1,
+) -> nn.Module:
+    n_sensors = X_train.shape[2]
+    n_out     = 1 if (task == 'regression' or n_classes == 2) else n_classes
+
+    # Para classificação não há normalização do target
+    if task == 'regression':
+        y_scaler       = StandardScaler()
+        y_train_input  = y_scaler.fit_transform(y_train.reshape(-1, 1)).ravel().astype(np.float32)
+        y_tensor_train = torch.FloatTensor(y_train_input)
+    elif n_classes == 2:
+        y_tensor_train = torch.FloatTensor(y_train.astype(np.float32))
+    else:
+        y_tensor_train = torch.LongTensor(y_train.astype(np.int64))
+
+    train_ds = TensorDataset(torch.FloatTensor(X_train), y_tensor_train)
+    loader   = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
+
+    if model_type in ('gru', 'lstm'):
+        model = _MODELOS_TS[model_type](n_sensors, hidden_size=hidden, n_layers=n_layers,
+                                        dropout=dropout, n_out=n_out)
+    elif model_type == 'mlp':
+        model = MLPRegressor(n_sensors, n_timesteps=n_ts, hidden_size=hidden,
+                             dropout=dropout, n_out=n_out)
+    else:
+        model = _MODELOS_TS[model_type](n_sensors, channels=channels, kernel_size=kernel,
+                                        dropout=dropout, n_out=n_out)
+
+    if task == 'regression':
+        loss_fn = nn.MSELoss()
+    elif n_classes == 2:
+        loss_fn = nn.BCEWithLogitsLoss()
+    else:
+        loss_fn = nn.CrossEntropyLoss()
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=30)
+    loss_label = 'MSE' if task == 'regression' else 'Loss'
+
+    historico = []
+    model.train()
+    for epoch in range(epochs):
+        ep_loss = 0.0
+        for xb, yb in loader:
+            optimizer.zero_grad()
+            loss = loss_fn(model(xb), yb)
+            loss.backward()
+            optimizer.step()
+            ep_loss += loss.item()
+        ep_loss /= len(loader)
+        historico.append(ep_loss)
+        scheduler.step(ep_loss)
+        if (epoch + 1) % 20 == 0:
+            print(f"    Época {epoch + 1}/{epochs} — {loss_label}: {ep_loss:.4f}  "
+                  f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+    model.eval()
+    with torch.no_grad():
+        raw_out = model(torch.FloatTensor(X_test))
+
+    os.makedirs('results', exist_ok=True)
+    fig, ax = plt.subplots(figsize=(7, 3))
+    ax.plot(historico)
+    ax.set_xlabel('Época'); ax.set_ylabel(loss_label)
+    ax.set_title(f'Loss — {model_type.upper()} {task} {target}')
+    fig.tight_layout()
+    fig.savefig(f'results/ts_loss_{model_type}_{target}.pdf', bbox_inches='tight')
+    plt.close(fig)
+
+    if task == 'regression':
+        y_pred = y_scaler.inverse_transform(raw_out.numpy().reshape(-1, 1)).ravel()
+        r2     = r2_score(y_test, y_pred)
+        mae    = mean_absolute_error(y_test, y_pred)
+        print(f"  {model_type.upper()} — R²: {r2:.4f}  MAE: {mae:.4f} m/s²")
+
+        if plot:
+            fig, ax = plt.subplots(figsize=(5, 4))
+            ax.scatter(y_test, y_pred, alpha=0.4, s=15)
+            lim = [min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())]
+            ax.plot(lim, lim, 'r--', lw=1)
+            ax.set_xlabel(f'{target} real (m/s²)')
+            ax.set_ylabel(f'{target} previsto (m/s²)')
+            ax.set_title(f'{model_type.upper()} — R²={r2:.3f}  MAE={mae:.3f}')
+            fig.tight_layout()
+            fig.savefig(f'results/ts_scatter_{model_type}_{target}.pdf', bbox_inches='tight')
+            plt.close(fig)
+
+    else:
+        avg = 'macro' if n_classes > 2 else 'binary'
+        if n_classes == 2:
+            y_pred = (torch.sigmoid(raw_out).numpy() > 0.5).astype(int)
+        else:
+            y_pred = raw_out.numpy().argmax(axis=1)
+
+        f1  = f1_score(y_test.astype(int), y_pred, average=avg, zero_division=0)
+        acc = accuracy_score(y_test.astype(int), y_pred)
+        print(f"  {model_type.upper()} — F1: {f1:.4f}  Acc: {acc:.4f}")
+
+        if plot:
+            cm  = confusion_matrix(y_test.astype(int), y_pred)
+            fig, ax = plt.subplots(figsize=(4, 3))
+            im = ax.imshow(cm, cmap='Blues')
+            for i in range(cm.shape[0]):
+                for j in range(cm.shape[1]):
+                    ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+            ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
+            ax.set_title(f'TS {model_type.upper()} — {target}\nF1={f1:.3f}')
+            fig.colorbar(im, ax=ax); fig.tight_layout()
+            fig.savefig(f'results/ts_cm_{model_type}_{target}.pdf', bbox_inches='tight')
+            plt.close(fig)
+
+    return model
+
+
+# ── Orquestração ──────────────────────────────────────────────────────────────
+
+def treinar_regressao_ts(
+    df_analysis: pd.DataFrame,
+    features_df: pd.DataFrame,
+    cfg: dict,
+    plot: bool = False,
+) -> None:
+    """
+    Treina modelos de série temporal (regressão ou classificação) sobre
+    dados brutos da janela pré-curva.
+    Configurado em config.yaml > time_series_regression.
+    """
+    ts_cfg    = cfg.get('time_series_regression', {})
+    raw_model = ts_cfg.get('model', 'gru')
+    modelos   = [raw_model.lower()] if isinstance(raw_model, str) else [m.lower() for m in raw_model]
+
+    invalidos = [m for m in modelos if m not in _TODOS_TS]
+    if invalidos:
+        raise ValueError(f"Modelos desconhecidos: {invalidos}. Válidos: {sorted(_TODOS_TS)}")
+
+    target       = ts_cfg.get('target', 'curve_accel_y_max')
+    task_cfg     = ts_cfg.get('task', 'auto')
+    task, n_classes = _detectar_task(target, task_cfg)
+
+    sensors    = ts_cfg.get('sensors', _SENSORS_PADRAO)
+    n_ts       = int(ts_cfg.get('n_timesteps', 50))
+    epochs     = int(ts_cfg.get('epochs', 100))
+    batch_size = int(ts_cfg.get('batch_size', 32))
+    lr         = float(ts_cfg.get('lr', 1e-3))
+    hidden     = int(ts_cfg.get('hidden_size', 64))
+    n_layers   = int(ts_cfg.get('n_layers', 1))
+    dropout    = float(ts_cfg.get('dropout', 0.3))
+    channels   = ts_cfg.get('channels', [32, 64])
+    kernel     = int(ts_cfg.get('kernel_size', 3))
+    test_size  = float(cfg.get('ml', {}).get('test_size', 0.3))
+    rnd        = int(cfg.get('ml', {}).get('random_state', 42))
+    scalares_cfg = ts_cfg.get('scalares_extras', [])
+
+    print(f"  Tarefa: {task.upper()} | Modelos: {modelos} | target: {target}")
+    print(f"  Timesteps: {n_ts} | Sensores: {sensors}")
+
+    # Codifica isl_class (string → int) antes da extração
+    if target == 'isl_class' and not pd.api.types.is_numeric_dtype(features_df[target]):
+        features_df = features_df.copy()
+        features_df[target] = features_df[target].map(_ISL_ENCODE)
+
+    # Canal autoregressivo: target da curva anterior (por rota base)
+    prev_col = f'prev_{target}'
+    if prev_col not in features_df.columns:
+        ft = features_df.copy().sort_values(['id_route', 'time_inicio'])
+        ft[prev_col] = ft.groupby(ft['id_route'].apply(_base_route))[target].shift(1)
+        features_df  = ft
+
+    scalares_todos = list(dict.fromkeys(scalares_cfg + [prev_col]))
+    disponiveis    = [c for c in scalares_todos if c in features_df.columns]
+    print(f"  Canais escalares extras: {disponiveis}")
+
+    X, y, rotas = extrair_sequencias_precurva(
+        df_analysis, features_df, sensors, n_ts, target,
+        scalares_extras=disponiveis,
+    )
+    n_sensors    = X.shape[2]
+    n_seq_sensor = len([s for s in sensors if s in df_analysis.columns])
+    print(f"  {len(X)} sequências  |  canais: {n_sensors} "
+          f"({n_seq_sensor} temporais + {len(disponiveis)} escalares)")
+
+    # Cap de percentil (só para regressão — remove valores clipados pelo preprocessing)
+    if task == 'regression':
+        cap_pct = ts_cfg.get('target_cap_percentil')
+        if cap_pct is not None:
+            cap_val  = np.percentile(y, cap_pct)
+            mask_cap = y <= cap_val
+            X, y, rotas = X[mask_cap], y[mask_cap], rotas[mask_cap]
+            print(f"  Cap {cap_pct}º percentil: ≤ {cap_val:.3f} → {len(y)} sequências mantidas")
+
+    # Split estratificado pela mediana/moda do target por rota
+    route_y: dict[str, list] = {}
+    for r, yi in zip(rotas, y):
+        route_y.setdefault(_base_route(r), []).append(yi)
+
+    base_rotas    = list(route_y.keys())
+    route_stats   = np.array([np.median(route_y[r]) for r in base_rotas])
+    n_bins        = min(3, len(base_rotas) // 2)
+    bins          = np.quantile(route_stats, np.linspace(0, 1, n_bins + 1))
+    strata        = np.digitize(route_stats, bins[1:-1])
+
+    train_base, _ = train_test_split(base_rotas, test_size=test_size, random_state=rnd, stratify=strata)
+    train_mask    = np.array([_base_route(r) in set(train_base) for r in rotas])
+
+    X_train, X_test = X[train_mask], X[~train_mask]
+    y_train, y_test = y[train_mask], y[~train_mask]
+
+    if task == 'regression':
+        print(f"  Split — treino: {len(y_train)} (μ={y_train.mean():.3f})  "
+              f"teste: {len(y_test)} (μ={y_test.mean():.3f})")
+    else:
+        vals, cnts = np.unique(y_test.astype(int), return_counts=True)
+        dist = ' | '.join(f'cls{v}:{c}' for v, c in zip(vals, cnts))
+        print(f"  Split — treino: {len(y_train)}  teste: {len(y_test)} ({dist})")
+
+    # Normaliza sensores (fit apenas no treino) — compartilhado por todos os modelos
+    for j in range(n_sensors):
+        sc = StandardScaler()
+        X_train[:, :, j] = sc.fit_transform(X_train[:, :, j])
+        X_test[:, :, j]  = sc.transform(X_test[:, :, j])
+
+    X_train_flat = X_train.reshape(len(X_train), -1)
+    X_test_flat  = X_test.reshape(len(X_test), -1)
+
+    for model_type in modelos:
+        print(f"\n  [{model_type.upper()}]")
+        if model_type in _CLASSICOS_TS:
+            _treinar_um_classico(
+                model_type, X_train_flat, X_test_flat, y_train, y_test,
+                target=target, plot=plot, rnd=rnd, task=task, n_classes=n_classes,
+            )
+        else:
+            _treinar_um_neural(
+                model_type, X_train, X_test, y_train, y_test,
+                target=target, plot=plot,
+                epochs=epochs, batch_size=batch_size, lr=lr,
+                hidden=hidden, n_layers=n_layers, dropout=dropout,
+                channels=channels, kernel=kernel, n_ts=n_ts,
+                task=task, n_classes=n_classes,
+            )
