@@ -180,12 +180,13 @@ def _etapa_regressao(features_df: pd.DataFrame, cfg: dict, plot: bool, target: s
 
 
 def etapa_accel_regressao(features_df, cfg, plot):
-    """P1 — Regressão aceleração lateral (curve_accel_y_max, sensor direto, sem assumir μ)."""
-    print("\n  Regressão — curve_accel_y_max")
-    r1 = _etapa_regressao(features_df, cfg, plot, target='curve_accel_y_max')
-    print("\n  Regressão — curve_abs_accel_max")
-    r2 = _etapa_regressao(features_df, cfg, plot, target='curve_abs_accel_max')
-    return r1, r2
+    """P1 — Regressão de aceleração dentro da curva. Targets definidos em ml.regression_targets."""
+    targets = cfg['ml'].get('regression_targets', ['curve_accel_y_max', 'curve_abs_accel_max'])
+    resultados = []
+    for target in targets:
+        print(f"\n  Regressão — {target}")
+        resultados.append(_etapa_regressao(features_df, cfg, plot, target=target))
+    return resultados
 
 
 def etapa_manobra_velocidade(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
@@ -256,6 +257,7 @@ def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
         epochs=pt_cfg.get('epochs', 100),
         batch_size=pt_cfg.get('batch_size', 32),
         lr=pt_cfg.get('lr', 1e-3),
+        dropout=pt_cfg.get('dropout', 0.3),
         test_size=cfg['ml']['test_size'],
         random_state=cfg['ml']['random_state'],
     )

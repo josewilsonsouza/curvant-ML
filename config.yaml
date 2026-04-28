@@ -11,6 +11,9 @@ data:
     - obd-17-van-circuito-t1
     - obd-17-van-cicuito-t2
 
+# Etapa 1: pré-processamento
+# Aplicado sempre, independentemente de qual flag for usada.
+# Script: python scripts/preprocess_data.py
 preprocessing:
   accel_limite: 5.0              # m/s² — clip de spikes do acelerômetro
   vel_max: 150.0                 # km/h — velocidade máxima plausível
@@ -19,6 +22,8 @@ preprocessing:
   max_gap: 30.0                  # s — gap que divide um trajeto em sub-trajetos
   min_pontos_segmento: 10        # pontos mínimos por sub-trajeto
 
+#  Etapa 2: detecção de curvas
+# Aplicado sempre. Produz: curva, raio_curvatura, curvatura, classe_dnit.
 curve_detection:
   sigma: 2          # suavização gaussiana
   limite_raio: 150   # metros — raio máximo para marcar curva=True
@@ -32,6 +37,8 @@ curve_detection:
     aberta:       500    # R ≤ 500 m — D >  2.3°
     # suave: R > 500 m
 
+# Etapa 4: análise de condução
+# Aplicado sempre. Classifica janelas temporais em Perigosa/Segura por 3 critérios.
 driving_analysis:
   janela_tempo: 15            # segundos (usado apenas no modo legado sem coluna 'curva')
   janela_aproximacao: 5       # segundos de abordagem incluídos na avaliação de cada curva
@@ -43,9 +50,11 @@ driving_analysis:
     limiar_accel_lateral: 0.3 # m/s² — aceleração lateral mínima
     min_mudancas: 3           # nº de eventos para detectar zigue-zague
 
+# Etapa 5: extração de features
+# Aplicado sempre. Produz features F1–F5 por curva.
 features:
   janela_tempo: 15          # usado como fallback se distancia_acumulada ausente
-  janela_distancia: null    # metros fixos antes da curva; null = distância dinâmica
+  janela_distancia: 300    # metros fixos antes da curva; null = distância dinâmica
   janela_acel_confort: 2.5  # m/s² — desaceleração de conforto para cálculo dinâmico
   janela_distancia_min: 50  # m — distância mínima da janela dinâmica
   janela_distancia_max: 400 # m — distância máxima da janela dinâmica
@@ -55,6 +64,9 @@ features:
     - accel_x
     - accel_y
 
+# Modelos clássicos
+# Flags: --classical | --optuna | --isl | --mlp | --pytorch
+# Parâmetros compartilhados por todos os modelos tabulares.
 ml:
   random_state: 42
   test_size: 0.3
@@ -63,34 +75,50 @@ ml:
   # PCA antes dos modelos (aplicado após SMOTE + StandardScaler):
   #   null        — desativado (padrão)
   #   float 0–1   — manter N% da variância explicada  (ex.: 0.95)
-  #   int ≥ 1     — número fixo de componentes        (ex.: 10)
+  #   int >= 1     — número fixo de componentes        (ex.: 10)
   pca_n_components: null
   # Remove curvas com isl_max acima deste percentil antes de treinar (ruído B-spline / GPS)
   # null = sem filtro; 99 = remove o 1% mais extremo
-  isl_max_cap_percentil: 99
+  isl_max_cap_percentil: 95
+  # Flag --isl: targets da regressão de aceleração dentro da curva (P1)
+  regression_targets:
+    - curve_accel_y_max
+    - curve_abs_accel_max
 
+# Otimização Bayesiana
+# Flag: --optuna
+# Substituí LogReg/SVM/DT pelos melhores XGBoost e RandomForest via Optuna.
+optuna:
+  n_trials_xgb: 50    # trials para XGBoost
+  n_trials_rf: 30     # trials para RandomForest
+  timeout: 300        # segundos máximos por otimização (interrompe antes de acabar os trials)
+
+# Redes neurais tabulares
 neural_networks:
+  # Flag: --mlp
+  # MLP sklearn com GridSearchCV sobre hidden_layer_sizes.
   mlp_sklearn:
     hidden_layer_sizes: [[128, 64], [256, 128, 64]]  # candidatos para GridSearchCV
     activation: relu
     solver: adam
     alpha: 0.001
     max_iter: 2000
+  # Flag: --pytorch
+  # MLP multi-tarefa PyTorch (4 heads: isl_class + 3 manobras binárias).
   multitask_mlp:
     epochs: 400
     batch_size: 32
     lr: 0.0005
+    dropout: 0.3      # aplicado no encoder compartilhado (256→128)
 
-optuna:
-  n_trials_xgb: 50    # trials para XGBoost
-  n_trials_rf: 30     # trials para RandomForest
-  timeout: 300        # segundos máximos por otimização (interrompe antes de acabar os trials)
-
+# Regressão de série temporal
+# Flag: --ts
+# Opera sobre a janela pré-curva de dados brutos (sensores + escalares).
 time_series_regression:
-  model: [rf,xgboost,linear]          # string ou lista — gru | lstm | cnn1d | mlp | linear | rf | xgboost
+  model: [cnn1d,mlp,rf,xgboost,linear]          # string ou lista — gru | lstm | cnn1d | mlp | linear | rf | xgboost
   # exemplos de lista: model: [gru, rf, xgboost]
   task: auto                  # auto (detecta pelo target) | regression | classification
-  target: isl_mean
+  target: curve_accel_y_max
   # Regressão:       curve_accel_y_max | curve_accel_y_mean | curve_abs_accel_max | isl_max | isl_mean
   # Classificação:   manobra_combinado_curva | manobra_accel_curva | manobra_lateral_curva
   #                  manobra_ziguezague_curva | isl_class
@@ -99,16 +127,29 @@ time_series_regression:
     - accel_x
     - accel_y
     - engine_rpm
-    - raio_curvatura        # raio GPS da abordagem — correlato do raio da curva seguinte
-  scalares_extras:          # colunas de features_df adicionadas como canais constantes
-    - f3_janela_raio_min    # raio mínimo na janela pré-curva
-    - f3_janela_raio_mean   # raio médio na janela pré-curva
+   # - raio_curvatura            # raio GPS da abordagem — correlato do raio da curva seguinte
+  scalares_extras:              # colunas de features_df adicionadas como canais constantes
+    - janela_raio_min           # F3 — raio mínimo na janela pré-curva
+    - janela_raio_mean          # F3 — raio médio na janela pré-curva
+    - janela_raio_last          # F3 — raio no último ponto da janela
+    - v_entry                   # F2 — velocidade no limiar da curva
+    - v_entry_sq_over_raio_est  # F2 — proxy de ISL antes da curva
+    - jerk_y_max                # F2 — pico de jerk lateral
+    - n_perigo_accel_janela     # F2 — nº eventos acima do Círculo de Kamm
+    - n_perigo_lateral_janela   # F2 — nº eventos accel_y > limiar
+    - f4_raio_min               # F4 — raio mínimo real da curva (Modo 1)
+    - f4_raio_mean              # F4 — raio médio real da curva (Modo 1)
+    - f4_dnit_num               # F4 — classe DNIT numérica (Modo 1)
+    - prop_perigosas_antes      # F5 — proporção de curvas perigosas anteriores
+    - n_curvas_antes            # F5 — nº de curvas percorridas antes
   target_cap_percentil: 99  # remove extremos clipados (null = sem filtro)
   n_timesteps: 50     # comprimento fixo após reamostragem da janela pré-curva
-  epochs: 400
+  epochs: 200
   batch_size: 32
   lr: 0.001
   dropout: 0.3
+  early_stopping_patience: 40   # épocas sem melhora na val_loss → parar
+  val_size: 0.15                 # fração do treino usada para validação
   # GRU / LSTM
   hidden_size: 64
   n_layers: 1

@@ -59,12 +59,12 @@ class MultiTaskMLP(nn.Module):
     Entrada: vetor de features F1-F5 (normalizado externamente).
     """
 
-    def __init__(self, n_features: int):
+    def __init__(self, n_features: int, dropout: float = 0.3):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.BatchNorm1d(n_features),
-            nn.Linear(n_features, 256), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(256, 128),        nn.ReLU(), nn.Dropout(0.3),
+            nn.Linear(n_features, 256), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(256, 128),        nn.ReLU(), nn.Dropout(dropout),
         )
         self.head_isl_class = nn.Sequential(
             nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 3)
@@ -107,6 +107,7 @@ def treinar_multitask_mlp(
     epochs: int = 100,
     batch_size: int = 32,
     lr: float = 1e-3,
+    dropout: float = 0.3,
     test_size: float = 0.3,
     random_state: int = 42,
     lambdas: dict = None,
@@ -146,7 +147,7 @@ def treinar_multitask_mlp(
         batch_size=batch_size, shuffle=True, drop_last=True,
     )
 
-    model     = MultiTaskMLP(n_features=X_train.shape[1])
+    model     = MultiTaskMLP(n_features=X_train.shape[1], dropout=dropout)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=50,

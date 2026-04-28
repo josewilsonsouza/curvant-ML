@@ -237,18 +237,51 @@ _CLASSICOS_TS = {'linear', 'rf', 'xgboost'}
 _TODOS_TS     = set(_MODELOS_TS) | _CLASSICOS_TS
 
 
+def _flatten_para_classico(X: np.ndarray, n_temporal: int) -> np.ndarray:
+    """
+    Converte (n, T, C) em features tabulares para modelos clássicos:
+      - canais temporais [0:n_temporal]: mean, std, max, min, slope → n_temporal × 5
+      - canais escalares [n_temporal:] : valor único (constante no tempo) → n_scalar
+    Total: n_temporal * 5 + n_scalar  (ex.: 5×5 + 14 = 39 features)
+    """
+    n, T, C = X.shape
+    temporal = X[:, :, :n_temporal]
+
+    t   = np.linspace(0, 1, T)
+    t_c = t - t.mean()
+    slopes = (temporal * t_c[None, :, None]).sum(axis=1) / (t_c ** 2).sum()
+
+    parts = [
+        temporal.mean(axis=1),
+        temporal.std(axis=1),
+        temporal.max(axis=1),
+        temporal.min(axis=1),
+        slopes,
+    ]
+    if C > n_temporal:
+        parts.append(X[:, 0, n_temporal:])  # escalares constantes — basta o 1º timestep
+
+    return np.concatenate(parts, axis=1).astype(np.float32)
+
+
 # ── Clássicos ─────────────────────────────────────────────────────────────────
 
-def _build_classico(nome: str, rnd: int, task: str):
+def _build_classico(nome: str, rnd: int, task: str, y_train: np.ndarray | None = None):
     if task == 'classification':
         if nome == 'linear':
-            return LogisticRegression(max_iter=1000, random_state=rnd)
+            return LogisticRegression(max_iter=1000, random_state=rnd, class_weight='balanced')
         if nome == 'rf':
-            return RandomForestClassifier(n_estimators=200, random_state=rnd, n_jobs=-1)
+            return RandomForestClassifier(n_estimators=200, random_state=rnd, n_jobs=-1, class_weight='balanced')
         if nome == 'xgboost':
             if not _HAS_XGB:
                 raise ImportError("xgboost não instalado.")
-            return _XGBClassifier(n_estimators=200, random_state=rnd, verbosity=0, eval_metric='logloss')
+            scale = 1.0
+            if y_train is not None:
+                n_pos = (y_train == 1).sum()
+                n_neg = (y_train == 0).sum()
+                scale = float(n_neg / n_pos) if n_pos > 0 else 1.0
+            return _XGBClassifier(n_estimators=200, random_state=rnd, verbosity=0,
+                                  eval_metric='logloss', scale_pos_weight=scale)
     else:
         if nome == 'linear':
             return Ridge()
@@ -275,7 +308,7 @@ def _treinar_um_classico(
 ) -> dict:
     label = {'linear': 'Ridge' if task == 'regression' else 'LogisticReg',
              'rf': 'RandomForest', 'xgboost': 'XGBoost'}[nome]
-    clf   = _build_classico(nome, rnd, task)
+    clf   = _build_classico(nome, rnd, task, y_train=y_train.astype(int) if task == 'classification' else None)
 
     if task == 'classification':
         clf.fit(X_train_flat, y_train.astype(int))
@@ -345,22 +378,35 @@ def _treinar_um_neural(
     n_ts: int,
     task: str = 'regression',
     n_classes: int = 1,
+    patience: int = 40,
+    val_size: float = 0.15,
 ) -> nn.Module:
     n_sensors = X_train.shape[2]
     n_out     = 1 if (task == 'regression' or n_classes == 2) else n_classes
 
-    # Para classificação não há normalização do target
-    if task == 'regression':
-        y_scaler       = StandardScaler()
-        y_train_input  = y_scaler.fit_transform(y_train.reshape(-1, 1)).ravel().astype(np.float32)
-        y_tensor_train = torch.FloatTensor(y_train_input)
-    elif n_classes == 2:
-        y_tensor_train = torch.FloatTensor(y_train.astype(np.float32))
-    else:
-        y_tensor_train = torch.LongTensor(y_train.astype(np.int64))
+    # Split de validação (dentro do treino) para early stopping
+    X_tr, X_val, y_tr, y_val = train_test_split(
+        X_train, y_train, test_size=val_size, random_state=42,
+    )
 
-    train_ds = TensorDataset(torch.FloatTensor(X_train), y_tensor_train)
-    loader   = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
+    if task == 'regression':
+        y_scaler    = StandardScaler()
+        y_tr_scaled = y_scaler.fit_transform(y_tr.reshape(-1, 1)).ravel().astype(np.float32)
+        y_val_scaled = y_scaler.transform(y_val.reshape(-1, 1)).ravel().astype(np.float32)
+        y_tensor_tr  = torch.FloatTensor(y_tr_scaled)
+        y_tensor_val = torch.FloatTensor(y_val_scaled)
+    elif n_classes == 2:
+        y_tensor_tr  = torch.FloatTensor(y_tr.astype(np.float32))
+        y_tensor_val = torch.FloatTensor(y_val.astype(np.float32))
+    else:
+        y_tensor_tr  = torch.LongTensor(y_tr.astype(np.int64))
+        y_tensor_val = torch.LongTensor(y_val.astype(np.int64))
+
+    X_tensor_val = torch.FloatTensor(X_val)
+    loader = DataLoader(
+        TensorDataset(torch.FloatTensor(X_tr), y_tensor_tr),
+        batch_size=batch_size, shuffle=True, drop_last=True,
+    )
 
     if model_type in ('gru', 'lstm'):
         model = _MODELOS_TS[model_type](n_sensors, hidden_size=hidden, n_layers=n_layers,
@@ -375,17 +421,27 @@ def _treinar_um_neural(
     if task == 'regression':
         loss_fn = nn.MSELoss()
     elif n_classes == 2:
-        loss_fn = nn.BCEWithLogitsLoss()
+        n_pos = (y_tr == 1).sum()
+        n_neg = (y_tr == 0).sum()
+        pos_w = torch.tensor([n_neg / n_pos]) if n_pos > 0 else torch.tensor([1.0])
+        loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_w)
     else:
-        loss_fn = nn.CrossEntropyLoss()
+        classes, counts = np.unique(y_tr.astype(int), return_counts=True)
+        w = np.zeros(n_classes, dtype=np.float32)
+        for cls, cnt in zip(classes, counts):
+            w[cls] = 1.0 / cnt
+        w /= w.sum()
+        loss_fn = nn.CrossEntropyLoss(weight=torch.FloatTensor(w))
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=30)
+    optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
+    scheduler  = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
     loss_label = 'MSE' if task == 'regression' else 'Loss'
 
-    historico = []
-    model.train()
+    hist_train, hist_val = [], []
+    best_val, best_state, no_improve = float('inf'), None, 0
+
     for epoch in range(epochs):
+        model.train()
         ep_loss = 0.0
         for xb, yb in loader:
             optimizer.zero_grad()
@@ -394,11 +450,32 @@ def _treinar_um_neural(
             optimizer.step()
             ep_loss += loss.item()
         ep_loss /= len(loader)
-        historico.append(ep_loss)
-        scheduler.step(ep_loss)
+        hist_train.append(ep_loss)
+
+        model.eval()
+        with torch.no_grad():
+            val_loss = loss_fn(model(X_tensor_val), y_tensor_val).item()
+        hist_val.append(val_loss)
+
+        scheduler.step(val_loss)
+
+        if val_loss < best_val - 1e-6:
+            best_val   = val_loss
+            best_state = {k: v.clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                print(f"    Early stop — época {epoch + 1}  val: {val_loss:.4f}  "
+                      f"(melhor: {best_val:.4f})")
+                break
+
         if (epoch + 1) % 20 == 0:
-            print(f"    Época {epoch + 1}/{epochs} — {loss_label}: {ep_loss:.4f}  "
+            print(f"    Época {epoch + 1}/{epochs} — train: {ep_loss:.4f}  val: {val_loss:.4f}  "
                   f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
 
     model.eval()
     with torch.no_grad():
@@ -406,9 +483,12 @@ def _treinar_um_neural(
 
     os.makedirs('results', exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 3))
-    ax.plot(historico)
+    ax.plot(hist_train, label='treino', alpha=0.8)
+    ax.plot(hist_val,   label='val',    alpha=0.8)
+    ax.axvline(len(hist_train) - no_improve, color='r', linestyle='--', linewidth=0.8, label='best')
     ax.set_xlabel('Época'); ax.set_ylabel(loss_label)
     ax.set_title(f'Loss — {model_type.upper()} {task} {target}')
+    ax.legend()
     fig.tight_layout()
     fig.savefig(f'results/ts_loss_{model_type}_{target}.pdf', bbox_inches='tight')
     plt.close(fig)
@@ -496,6 +576,8 @@ def treinar_regressao_ts(
     test_size  = float(cfg.get('ml', {}).get('test_size', 0.3))
     rnd        = int(cfg.get('ml', {}).get('random_state', 42))
     scalares_cfg = ts_cfg.get('scalares_extras', [])
+    patience     = int(ts_cfg.get('early_stopping_patience', 40))
+    val_size_nn  = float(ts_cfg.get('val_size', 0.15))
 
     print(f"  Tarefa: {task.upper()} | Modelos: {modelos} | target: {target}")
     print(f"  Timesteps: {n_ts} | Sensores: {sensors}")
@@ -565,8 +647,10 @@ def treinar_regressao_ts(
         X_train[:, :, j] = sc.fit_transform(X_train[:, :, j])
         X_test[:, :, j]  = sc.transform(X_test[:, :, j])
 
-    X_train_flat = X_train.reshape(len(X_train), -1)
-    X_test_flat  = X_test.reshape(len(X_test), -1)
+    X_train_flat = _flatten_para_classico(X_train, n_seq_sensor)
+    X_test_flat  = _flatten_para_classico(X_test,  n_seq_sensor)
+    print(f"  Features clássicos: {X_train_flat.shape[1]} "
+          f"({n_seq_sensor} sensores × 5 stats + {X_train_flat.shape[1] - n_seq_sensor * 5} escalares)")
 
     for model_type in modelos:
         print(f"\n  [{model_type.upper()}]")
@@ -583,4 +667,5 @@ def treinar_regressao_ts(
                 hidden=hidden, n_layers=n_layers, dropout=dropout,
                 channels=channels, kernel=kernel, n_ts=n_ts,
                 task=task, n_classes=n_classes,
+                patience=patience, val_size=val_size_nn,
             )
