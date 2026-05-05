@@ -201,7 +201,7 @@ def _kalman_vel_constante(z: np.ndarray, times: np.ndarray, R: float, Q: float) 
     return resultado
 
 
-# ── Dispatcher ────────────────────────────────────────────────────────────────
+# Dispatcher
 
 _METODOS = {
     'mediana':     filtrar_mediana,

@@ -182,9 +182,15 @@ def extrair_features(
         row['n_perigo_accel_janela']   = int((_accel_total_janela > _kamm_lim).sum())
         row['n_perigo_lateral_janela'] = int((janela['accel_y'].abs() > 2.0).sum())
 
-        # Raio de curvatura na janela pré-curva (estimativa da geometria da curva seguinte)
-        # Sem leakage: são pontos ANTES da curva; o B-spline suavizado já captura a curvatura
-        # na aproximação — raio_min captura a tangente mais próxima da curva.
+        # Raio de curvatura na janela pré-curva (F3).
+        # A B-spline é ajustada ao trajeto inteiro: a curvatura aqui é influenciada pelos
+        # pontos da curva à frente (via spline global + filtro Gaussiano).
+        #
+        # Modo 1 (rota conhecida): comportamento CORRETO — o trajeto completo está disponível
+        # antes da viagem, então usar a geometria futura é legítimo.
+        #
+        # Modo 2 (rota desconhecida): comportamento INCORRETO — pontos futuros não estariam
+        # disponíveis num dispositivo OBD em tempo real. Por isso pipeline.py zera F3 em Modo 2.
         if 'raio_curvatura' in janela.columns:
             raios_janela = janela['raio_curvatura'].replace(0, np.nan).dropna()
             if len(raios_janela) > 0:
@@ -243,7 +249,8 @@ def extrair_features(
         )
         row['v_excess'] = row['manobra_velocidade']  # alias explícito da taxonomia
 
-        # ISL (calculado nos pontos curva=True)
+        # ISL cinemático: ISL = v²/(R·g·μ) = ctp_accel/(g·μ) — depende do raio GPS (B-spline).
+        # Ruído no raio pode gerar ISL inflado em trechos retos ou subestimado em curvas reais.
         if 'ctp_accel' in pts_curva.columns:
             isl_vals = pts_curva['ctp_accel'].abs() / (_G * _MU_PADRAO)
             isl_max  = float(isl_vals.max())
@@ -253,6 +260,17 @@ def extrair_features(
             row['isl_alto']  = 1 if isl_max >= 0.8 else 0
         else:
             row['isl_mean'] = row['isl_max'] = row['isl_class'] = row['isl_alto'] = np.nan
+
+        # ISL baseado no sensor OBD: ISL_sensor = |accel_y| / (g·μ)
+        # Independe do raio GPS — usa a aceleração lateral medida diretamente.
+        # Alternativa mais confiável para o ISL cinemático em curvas com GPS ruidoso.
+        if 'accel_y' in pts_curva.columns:
+            isl_s = pts_curva['accel_y'].abs() / (_G * _MU_PADRAO)
+            row['isl_sensor_max']   = float(isl_s.max())
+            row['isl_sensor_mean']  = float(isl_s.mean())
+            row['isl_sensor_class'] = classificar_isl(float(isl_s.max()))
+        else:
+            row['isl_sensor_max'] = row['isl_sensor_mean'] = row['isl_sensor_class'] = np.nan
 
         # P1 — aceleração lateral e total dentro da curva (targets de regressão sem assumir μ)
         if 'accel_y' in pts_curva.columns:
@@ -306,7 +324,10 @@ def extrair_features(
     for _, grupo in df_out.groupby('id_route', sort=False):
         grupo = grupo.copy()
 
-        grupo['n_curvas_antes']       = np.arange(len(grupo))
+        grupo['n_curvas_antes']    = np.arange(len(grupo))
+        # n_perigosas_antes usa os labels do próprio pipeline (shift garante ausência de leakage
+        # temporal), mas propaga ruído: um falso positivo precoce no trajeto inflaciona esta
+        # feature para todas as curvas seguintes da mesma rota.
         grupo['n_perigosas_antes']    = grupo['manobra'].shift(1).fillna(0).cumsum().astype(int)
         grupo['prop_perigosas_antes'] = (
             grupo['n_perigosas_antes'] / grupo['n_curvas_antes'].replace(0, np.nan)

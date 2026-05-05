@@ -32,7 +32,10 @@ São os dados brutos!
 """
 
 global dir_hf
-login(token='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')
+_hf_token = os.getenv('HF_TOKEN')
+if not _hf_token:
+    raise EnvironmentError("Variável de ambiente HF_TOKEN não definida. Execute: export HF_TOKEN=seu_token")
+login(token=_hf_token)
 dir_hf = 'jwsouza13/routes_ML_inmetro'
 
 def load_data_folder(folder):
@@ -75,7 +78,7 @@ dfs = []
 for file in data_eletro:
 
   df = pd.read_csv(file, sep=';')
-  id = file.split('/')[-1]
+  id = os.path.basename(file)
   _,_,vehicle,_,_ = id.split('-')
   df = df.assign(id_route = id.replace('.csv',''),
                  vehicle = vehicle,
@@ -190,7 +193,7 @@ for dado in data_rjdf:
     # a condição é apenas fazendo a checam das colunas.
 
   df = df.rename(columns=dict(zip_cols)) # renomendo as colunas
-  df = df.assign(id_route = dado.split('/')[-1].replace('.csv',''),
+  df = df.assign(id_route = os.path.basename(dado).replace('.csv',''),
                  vehicle = 'nivus',
                  loc_coleta = 'rjdf')
 
@@ -242,7 +245,7 @@ dfs_serra = []
 for dado in data_serra:
   df_serra = pd.read_csv(dado, skiprows=1)
   df_serra = df_serra.rename(columns=dict(zip_cols))
-  df_serra = df_serra.assign(id_route = dado.split('/')[-1].replace('.csv',''),
+  df_serra = df_serra.assign(id_route = os.path.basename(dado).replace('.csv',''),
                               vehicle = 'jetta',
                               loc_coleta = 'serra')
 
@@ -391,7 +394,7 @@ for dado in data_rjmgba:
     # mantem colunas não duplicadas
     df_temp = df_temp.loc[:, ~df_temp.columns.duplicated()]
 
-    df_temp = df_temp.assign(id_route = dado.split('/')[-1].replace('.csv',''),
+    df_temp = df_temp.assign(id_route = os.path.basename(dado).replace('.csv',''),
                              vehicle = 'Cruze e Jetta',
                              loc_coleta = 'rjmgba')
     dfs_rjmgba.append(df_temp)
@@ -433,7 +436,7 @@ for dado in data_janeiro:
 
   df_temp = df_temp.rename(columns=rename_dict)
   df_temp = df_temp.loc[:, ~df_temp.columns.duplicated()]
-  df_temp = df_temp.assign(id_route = dado.split('/')[-1].replace('.csv',''),
+  df_temp = df_temp.assign(id_route = os.path.basename(dado).replace('.csv',''),
                                   vehicle = 'carro',
                                   loc_coleta = 'janeiro')
   dfs_janeiro.append(df_temp)

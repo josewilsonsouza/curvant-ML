@@ -36,8 +36,10 @@ _COLS_EXCLUIR = [
     # targets de caracterização por curva
     'manobra', 'manobra_combinado_curva',
     'manobra_accel_curva', 'manobra_lateral_curva', 'manobra_ziguezague_curva',
-    # targets ISL (calculados dentro da curva — leakage)
+    # targets ISL — cinemático (v²/Rg μ) e baseado no sensor (|accel_y|/g μ)
+    # ambos calculados dentro da curva: leakage se usados como features
     'isl_value', 'isl_mean', 'isl_max', 'isl_class', 'isl_alto',
+    'isl_sensor_max', 'isl_sensor_mean', 'isl_sensor_class',
     # targets de aceleração dentro da curva
     'curve_accel_y_max', 'curve_accel_y_mean',
     'curve_abs_accel_max', 'curve_abs_accel_mean',
@@ -86,13 +88,23 @@ def _split_por_rota(
         .dropna(subset=[target])
     )
 
-    # NaN features (e.g. F4 in Mode 2) are filled with 0 before the scaler
-    X_train = df_train[feature_cols].fillna(0.0).values
+    # NaN em features de raio (f4_raio_* em Modo 2) são preenchidas com a mediana
+    # do conjunto de treino — semanticamente "raio típico" em vez de 0 (curvatura
+    # infinita) que o StandardScaler interpretaria como outlier extremo negativo.
+    # Demais NaN (features opcionais ausentes) ficam como 0.
+    _raio_cols = [c for c in feature_cols if 'raio' in c]
+    _medians   = df_train[_raio_cols].median()
+    df_train_filled = df_train[feature_cols].copy()
+    df_test_filled  = df_test[feature_cols].copy()
+    for col in _raio_cols:
+        df_train_filled[col] = df_train_filled[col].fillna(_medians[col])
+        df_test_filled[col]  = df_test_filled[col].fillna(_medians[col])
+    X_train = df_train_filled.fillna(0.0).values
     y_train = df_train[target].values
     # GroupKFold groups on the original recording ID (strips _p<N>) so all
     # sub-trajectories from the same file stay in the same fold
     groups_train = np.array([_base_route(r) for r in df_train['id_route'].astype(str)])
-    X_test  = df_test[feature_cols].fillna(0.0).values
+    X_test  = df_test_filled.fillna(0.0).values
     y_test  = df_test[target].values
 
     return X_train, X_test, y_train, y_test, groups_train

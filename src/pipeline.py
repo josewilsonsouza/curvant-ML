@@ -71,8 +71,19 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') ->
     """
     Etapas 5-6: extrai features e alvos por curva.
 
-    modo='modo1' — inclui F4 (geometria da curva seguinte)
-    modo='modo2' — zera F4 e modo_rota_conhecida=0
+    modo='modo1' — rota pré-conhecida (ex: frota com rotas fixas, navegação GPS).
+        O trajeto completo (lat, lon) está disponível antes da viagem.
+        B-spline ajustada sobre todos os pontos é legítima — o sistema pode
+        "ver" a curva à frente porque a rota já está mapeada.
+        Features disponíveis: F1 + F2 + F3 + F4 + F5.
+
+    modo='modo2' — rota desconhecida, somente dados OBD acumulados até o instante atual.
+        Apenas pontos já percorridos estão disponíveis para o modelo.
+        F4 (geometria real da curva) é zerrada porque exige conhecimento futuro.
+        F3 (raio estimado via B-spline) também é zerrada: a B-spline foi ajustada
+        sobre o trajeto inteiro (incluindo pontos além da posição atual), o que
+        constituiria look-ahead num dispositivo OBD em tempo real.
+        Features disponíveis: F1 + F2 (sem raio) + F5.
     """
     df_analysis = df_analysis.copy()
     for col in ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']:
@@ -91,7 +102,13 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') ->
     )
 
     if modo == 'modo2':
-        for col in ['f4_raio_min', 'f4_raio_mean', 'f4_dnit_num']:
+        # F4 — geometria real da curva seguinte (requer rota pré-conhecida)
+        _cols_f4 = ['f4_raio_min', 'f4_raio_mean', 'f4_dnit_num']
+        # F3 — raio estimado via B-spline global: usa pontos futuros do trajeto,
+        #       indisponíveis num cenário de rota desconhecida em tempo real
+        _cols_f3 = ['janela_raio_min', 'janela_raio_mean', 'janela_raio_last',
+                    'v_entry_sq_over_raio_est']
+        for col in _cols_f4 + _cols_f3:
             if col in features_df.columns:
                 features_df[col] = np.nan
         features_df['modo_rota_conhecida'] = 0

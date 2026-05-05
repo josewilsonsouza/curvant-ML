@@ -154,12 +154,13 @@ def detectar_curvas(df,
 def identificar_trechos_curvos(df: pd.DataFrame) -> pd.DataFrame:
     """
     Identifica trechos contínuos de curva com base na coluna 'curva'.
-    Adiciona a coluna 'trecho_curvo' com ID numérico por trecho.
+    Adiciona a coluna 'trecho_curvo' com ID numérico por trecho, reiniciando em 1
+    para cada rota (trecho_curvo=0 significa ponto fora de curva).
     """
     partes = []
-    trecho_id = 1
 
     for traj in df['id_route'].unique():
+        trecho_id = 1  # reinicia por rota — evita IDs globais que crescem indefinidamente
         df_traj = df.query(f'id_route == "{traj}"').copy().reset_index(drop=True)
         df_traj['trecho_curvo'] = 0
         em_trecho = False

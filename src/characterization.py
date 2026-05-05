@@ -18,7 +18,9 @@ _MU: float = 0.6    # coeficiente de atrito estático — asfalto seco
 _DNIT_RISCO: dict[str, int] = {
     'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4,
 }
-_RISCO_MIN_DIRECAO = 2
+_RISCO_MIN_DIRECAO = 1  # aberta (R ≤ 500 m) ou mais fechada; era 2 (media, R ≤ 200 m), mas
+                        # o raio B-spline tem ruído suficiente para classificar curvas de 100–150 m
+                        # como 'aberta', bloqueando o gate mesmo com accel_y elevado
 
 
 def calcular_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -35,7 +37,13 @@ def _detectar_zigue_zague(
     limiar_bearing: float = 15.0,
     limiar_accel_lateral: float = 0.3,
     min_mudancas: int = 3,
+    vel_min_kmh: float = 5.0,
 ) -> bool:
+    # Em velocidades baixas, o espaçamento GPS (~1–3 m) é da mesma ordem que o erro de
+    # posição (~3–5 m), gerando mudanças de bearing fictícias mesmo em linha reta.
+    if 'vehicle_speed' in janela.columns:
+        janela = janela[janela['vehicle_speed'] >= vel_min_kmh]
+
     lats = janela['lat'].tolist()
     lons = janela['lon'].tolist()
     ctp  = janela['ctp_accel'].tolist()

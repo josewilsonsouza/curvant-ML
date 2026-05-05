@@ -118,7 +118,7 @@ time_series_regression:
   model: [cnn1d,mlp,rf,xgboost,linear]          # string ou lista — gru | lstm | cnn1d | mlp | linear | rf | xgboost
   # exemplos de lista: model: [gru, rf, xgboost]
   task: auto                  # auto (detecta pelo target) | regression | classification
-  target: curve_accel_y_max
+  target: isl_class
   # Regressão:       curve_accel_y_max | curve_accel_y_mean | curve_abs_accel_max | isl_max | isl_mean
   # Classificação:   manobra_combinado_curva | manobra_accel_curva | manobra_lateral_curva
   #                  manobra_ziguezague_curva | isl_class
@@ -148,7 +148,7 @@ time_series_regression:
   batch_size: 32
   lr: 0.001
   dropout: 0.3
-  early_stopping_patience: 40   # épocas sem melhora na val_loss → parar
+  early_stopping_patience: 40   # épocas sem melhora na val_loss -> parar
   val_size: 0.15                 # fração do treino usada para validação
   # GRU / LSTM
   hidden_size: 64

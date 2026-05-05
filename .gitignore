@@ -8,3 +8,4 @@ data/eletro_rjdf_serra_clean.parquet
 plots-test.py
 *.parquet
 results/
+.env
