@@ -1,11 +1,12 @@
 """
 CurvantML — Deep learning multi-tarefa em PyTorch.
 
-MultiTaskMLP: encoder compartilhado (256→128) + quatro heads independentes:
-  - isl_class                (3 classes, CrossEntropyLoss)
-  - manobra_accel_curva      (binário, BCELoss)
-  - manobra_lateral_curva    (binário, BCELoss)
-  - manobra_ziguezague_curva (binário, BCELoss)
+MultiTaskMLP: encoder compartilhado (64 unidades) + cinco heads lineares:
+  - isl_max                   (regressão, MSELoss; isl_class derivado por threshold)
+  - manobra_accel_curva       (binário, BCEWithLogitsLoss)
+  - manobra_lateral_curva     (binário, BCEWithLogitsLoss)
+  - manobra_ziguezague_curva  (binário, BCEWithLogitsLoss)
+  - manobra_combinado_curva   (binário, BCEWithLogitsLoss)
 
 Regressão de série temporal (curve_accel_y_max) tratada separadamente
 em modelos_ts.py, que opera sobre dados brutos da janela pré-curva.
@@ -18,7 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from sklearn.metrics import confusion_matrix, f1_score
+from sklearn.metrics import confusion_matrix, f1_score, mean_absolute_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
@@ -30,8 +31,9 @@ _ISL_LABELS  = {0: 'baixo', 1: 'medio', 2: 'alto'}
 
 _TARGETS_BINARIOS = [
     'manobra_accel_curva', 'manobra_lateral_curva', 'manobra_ziguezague_curva',
+    'manobra_combinado_curva',
 ]
-_TARGETS_TODOS = ['isl_class'] + _TARGETS_BINARIOS
+_TARGETS_TODOS = ['isl_max'] + _TARGETS_BINARIOS
 
 
 class CurvantDataset(Dataset):
@@ -55,39 +57,38 @@ class CurvantDataset(Dataset):
 
 class MultiTaskMLP(nn.Module):
     """
-    MLP multi-tarefa: encoder compartilhado (256→128) + quatro heads independentes.
-    Entrada: vetor de features F1-F5 (normalizado externamente).
+    MLP multi-tarefa: encoder compartilhado (64 unidades) + cinco heads lineares.
+    isl_class é derivado de isl_max por threshold (0.5/0.8) na avaliação.
     """
 
-    def __init__(self, n_features: int, dropout: float = 0.3):
+    def __init__(self, n_features: int, dropout: float = 0.5):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.BatchNorm1d(n_features),
-            nn.Linear(n_features, 256), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(256, 128),        nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(n_features, 64), nn.GELU(), nn.Dropout(dropout),
         )
-        self.head_isl_class = nn.Sequential(
-            nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 3)
-        )
-        self.head_accel   = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 1), nn.Sigmoid())
-        self.head_lateral = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 1), nn.Sigmoid())
-        self.head_zz      = nn.Sequential(nn.Linear(128, 64), nn.ReLU(), nn.Linear(64, 1), nn.Sigmoid())
+        self.head_isl_max   = nn.Linear(64, 1)
+        self.head_accel     = nn.Linear(64, 1)
+        self.head_lateral   = nn.Linear(64, 1)
+        self.head_zz        = nn.Linear(64, 1)
+        self.head_combinado = nn.Linear(64, 1)
 
     def forward(self, x: torch.Tensor) -> dict:
         z = self.encoder(x)
         return {
-            'isl_class':                self.head_isl_class(z),
+            'isl_max':                  self.head_isl_max(z).squeeze(-1),
             'manobra_accel_curva':      self.head_accel(z).squeeze(-1),
             'manobra_lateral_curva':    self.head_lateral(z).squeeze(-1),
             'manobra_ziguezague_curva': self.head_zz(z).squeeze(-1),
+            'manobra_combinado_curva':  self.head_combinado(z).squeeze(-1),
         }
 
 
 def _preparar_targets(df: pd.DataFrame) -> dict:
     """Extrai e codifica os alvos disponíveis no DataFrame."""
     targets = {}
-    if 'isl_class' in df.columns:
-        targets['isl_class'] = df['isl_class'].map(_ISL_ENCODE).fillna(0).values
+    if 'isl_max' in df.columns:
+        targets['isl_max'] = df['isl_max'].fillna(0.0).values.astype(np.float32)
     for col in _TARGETS_BINARIOS:
         if col in df.columns:
             targets[col] = df[col].fillna(0).values
@@ -95,10 +96,11 @@ def _preparar_targets(df: pd.DataFrame) -> dict:
 
 
 _LAMBDAS_PADRAO = {
-    'isl_class':                1.0,
+    'isl_max':                  0.1,   # regressão — escala diferente dos BCE
     'manobra_accel_curva':      1.0,
     'manobra_lateral_curva':    1.0,
     'manobra_ziguezague_curva': 1.0,
+    'manobra_combinado_curva':  1.0,
 }
 
 
@@ -107,7 +109,8 @@ def treinar_multitask_mlp(
     epochs: int = 100,
     batch_size: int = 32,
     lr: float = 1e-3,
-    dropout: float = 0.3,
+    dropout: float = 0.5,
+    weight_decay: float = 0.01,
     test_size: float = 0.3,
     random_state: int = 42,
     lambdas: dict = None,
@@ -148,17 +151,21 @@ def treinar_multitask_mlp(
     )
 
     model     = MultiTaskMLP(n_features=X_train.shape[1], dropout=dropout)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='min', factor=0.5, patience=50,
     )
 
-    loss_fns = {
-        'isl_class':                nn.CrossEntropyLoss(),
-        'manobra_accel_curva':      nn.BCELoss(),
-        'manobra_lateral_curva':    nn.BCELoss(),
-        'manobra_ziguezague_curva': nn.BCELoss(),
-    }
+    loss_fns = {}
+    if 'isl_max' in train_targets:
+        loss_fns['isl_max'] = nn.MSELoss()
+    for key in _TARGETS_BINARIOS:
+        if key in train_targets:
+            y = train_targets[key]
+            n_pos = float(y.sum())
+            n_neg = float(len(y) - n_pos)
+            pw = torch.tensor([min(n_neg / n_pos if n_pos > 0 else 1.0, 5.0)])
+            loss_fns[key] = nn.BCEWithLogitsLoss(pos_weight=pw)
 
     historico_loss = []
     model.train()
@@ -201,28 +208,34 @@ def treinar_multitask_mlp(
         p = preds_test[key].numpy()
         y = test_targets[key]
 
-        if key == 'isl_class':
-            pred_labels = np.argmax(p, axis=1)
-            f1 = f1_score(y.astype(int), pred_labels, average='macro', zero_division=0)
-            print(f"    isl_class   F1-macro: {f1:.4f}")
-            cm = confusion_matrix(y.astype(int), pred_labels)
-            fig, ax = plt.subplots(figsize=(4, 3))
-            im = ax.imshow(cm, cmap='Blues')
-            ticks = [_ISL_LABELS[i] for i in range(3)]
-            ax.set_xticks(range(3)); ax.set_xticklabels(ticks)
-            ax.set_yticks(range(3)); ax.set_yticklabels(ticks)
-            for i in range(3):
-                for j in range(3):
-                    ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
-            ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
-            ax.set_title(f'PyTorch — isl_class  F1={f1:.3f}')
-            fig.colorbar(im, ax=ax)
-            fig.tight_layout()
-            fig.savefig('results/pytorch_cm_isl_class.pdf', bbox_inches='tight')
-            plt.close(fig)
+        if key == 'isl_max':
+            mae = mean_absolute_error(y, p)
+            r2  = r2_score(y, p)
+            print(f"    isl_max     MAE: {mae:.4f}  R²: {r2:.4f}")
+            # deriva isl_class a partir dos limiares e reporta F1-macro
+            if 'isl_class' in df.columns:
+                y_cls  = df.loc[id_routes.map(_base_route).isin(test_base_set), 'isl_class'].map(_ISL_ENCODE).fillna(0).values
+                p_cls  = np.where(p < 0.5, 0, np.where(p < 0.8, 1, 2))
+                f1_cls = f1_score(y_cls.astype(int), p_cls, average='macro', zero_division=0)
+                print(f"    isl_class (via isl_max)  F1-macro: {f1_cls:.4f}")
+                cm = confusion_matrix(y_cls.astype(int), p_cls)
+                fig, ax = plt.subplots(figsize=(4, 3))
+                im = ax.imshow(cm, cmap='Blues')
+                ticks = [_ISL_LABELS[i] for i in range(3)]
+                ax.set_xticks(range(3)); ax.set_xticklabels(ticks)
+                ax.set_yticks(range(3)); ax.set_yticklabels(ticks)
+                for i in range(3):
+                    for j in range(3):
+                        ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+                ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
+                ax.set_title(f'PyTorch — isl_class  F1={f1_cls:.3f}')
+                fig.colorbar(im, ax=ax)
+                fig.tight_layout()
+                fig.savefig('results/pytorch_cm_isl_class.pdf', bbox_inches='tight')
+                plt.close(fig)
 
         else:
-            pred_labels = (p > 0.5).astype(int)
+            pred_labels = (p > 0.0).astype(int)
             f1 = f1_score(y.astype(int), pred_labels, average='weighted', zero_division=0)
             print(f"    {key:<30s} F1: {f1:.4f}")
             cm = confusion_matrix(y.astype(int), pred_labels)

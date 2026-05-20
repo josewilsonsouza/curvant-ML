@@ -5,7 +5,7 @@ Framework de machine learning para prever condução de risco em curvas, momento
 ## Instalação
 
 ```bash
-pip install -e ".[dev]"
+pip install -e
 ```
 
 ## Como rodar
@@ -29,15 +29,6 @@ python scripts/run.py --isl --pytorch --ts --plot  # combinação completa
 ```
 
 As etapas de pré-processamento (1–5) são cacheadas automaticamente em `data/.cache_*.parquet` após a primeira execução. Use `--rebuild` para invalidar o cache (necessário ao mudar parâmetros de `config.yaml` que afetam a detecção de curvas ou extração de features).
-
-## Dois modos de pipeline
-
-O pipeline opera em dois modos que diferem na disponibilidade da geometria real da curva seguinte:
-
-| Modo | Features F4 | Caso de uso |
-|------|-------------|-------------|
-| `modo1` (padrão) | ✓ incluídas: `f4_raio_min`, `f4_raio_mean`, `f4_dnit_num` | **Rota conhecida** — trace GPS completo pré-mapeado |
-| `modo2` | ✗ zeradas (NaN → 0) | **Rota desconhecida** — apenas OBD + posição atual |
 
 ### O que são as features F4
 

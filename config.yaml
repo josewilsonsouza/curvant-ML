@@ -54,13 +54,13 @@ driving_analysis:
 # Aplicado sempre. Produz features F1–F5 por curva.
 features:
   janela_tempo: 15          # usado como fallback se distancia_acumulada ausente
-  janela_distancia: 300    # metros fixos antes da curva; null = distância dinâmica
+  janela_distancia: 50    # metros fixos antes da curva; null = distância dinâmica
   janela_acel_confort: 2.5  # m/s² — desaceleração de conforto para cálculo dinâmico
-  janela_distancia_min: 50  # m — distância mínima da janela dinâmica
-  janela_distancia_max: 400 # m — distância máxima da janela dinâmica
+  janela_distancia_min: 10  # m — distância mínima da janela dinâmica
+  janela_distancia_max: 200 # m — distância máxima da janela dinâmica
   vars_sensor:
     - vehicle_speed
-    - engine_rpm
+#    - engine_rpm
     - accel_x
     - accel_y
 
@@ -91,6 +91,7 @@ ml:
 optuna:
   n_trials_xgb: 50    # trials para XGBoost
   n_trials_rf: 30     # trials para RandomForest
+  n_trials_lr: 20     # trials para LogisticRegression (busca em C, escala log)
   timeout: 300        # segundos máximos por otimização (interrompe antes de acabar os trials)
 
 # Redes neurais tabulares
@@ -108,18 +109,27 @@ neural_networks:
   multitask_mlp:
     epochs: 400
     batch_size: 32
-    lr: 0.0005
-    dropout: 0.3      # aplicado no encoder compartilhado (256→128)
+    lr: 0.005
+    dropout: 0.5        # era 0.3
+    weight_decay: 0.01  # novo — L2 equivalente ao C da regressão logística
+
+# Simulação de Monte Carlo (aplicada automaticamente em etapa_features)
+# Produz mc_p_baixo, mc_p_medio, mc_p_alto — disponíveis para todos os módulos.
+montecarlo:
+  n_sim: 1000        # cenários por curva
+  k_ultimos: 10      # últimos pontos da janela usados para tendência de velocidade
+  sigma_min: 0.5     # desvio mínimo em km/h (incerteza do sensor)
 
 # Regressão de série temporal
 # Flag: --ts
 # Opera sobre a janela pré-curva de dados brutos (sensores + escalares).
 time_series_regression:
-  model: [cnn1d,mlp,rf,xgboost,linear]          # string ou lista — gru | lstm | cnn1d | mlp | linear | rf | xgboost
+  model: [mlp,lstm, linear, xgboost]          # string ou lista — gru | lstm | cnn1d | mlp | linear | rf | xgboost
   # exemplos de lista: model: [gru, rf, xgboost]
   task: auto                  # auto (detecta pelo target) | regression | classification
-  target: isl_class
-  # Regressão:       curve_accel_y_max | curve_accel_y_mean | curve_abs_accel_max | isl_max | isl_mean
+  target: v_critica
+  # Regressão:       v_critica | curve_accel_y_max | curve_accel_y_mean | isl_max | isl_mean
+  #   v_critica → velocidade (km/h) no pico de ISL da curva; isl_class derivado via física
   # Classificação:   manobra_combinado_curva | manobra_accel_curva | manobra_lateral_curva
   #                  manobra_ziguezague_curva | isl_class
   sensors:
@@ -137,19 +147,25 @@ time_series_regression:
     - jerk_y_max                # F2 — pico de jerk lateral
     - n_perigo_accel_janela     # F2 — nº eventos acima do Círculo de Kamm
     - n_perigo_lateral_janela   # F2 — nº eventos accel_y > limiar
-    - f4_raio_min               # F4 — raio mínimo real da curva (Modo 1)
-    - f4_raio_mean              # F4 — raio médio real da curva (Modo 1)
-    - f4_dnit_num               # F4 — classe DNIT numérica (Modo 1)
+    - f4_raio_min               # F4 — raio mínimo real da curva
+    - f4_raio_mean              # F4 — raio médio real da curva
+    - f4_dnit_num               # F4 — classe DNIT numérica
+    - isl_entry_estimate        # F4 — ISL físico na entrada: v²/(f4_raio_min×g×μ)
+    - mc_p_baixo               # MC — P(ISL < 0.5) simulado
+    - mc_p_medio               # MC — P(0.5 ≤ ISL < 0.8) simulado
+    - mc_p_alto                # MC — P(ISL ≥ 0.8) simulado
+    - v_pred_kinematica        # cinemático — velocidade mínima prevista na entrada (km/h)
     - prop_perigosas_antes      # F5 — proporção de curvas perigosas anteriores
     - n_curvas_antes            # F5 — nº de curvas percorridas antes
   target_cap_percentil: 99  # remove extremos clipados (null = sem filtro)
   n_timesteps: 50     # comprimento fixo após reamostragem da janela pré-curva
   epochs: 200
   batch_size: 32
-  lr: 0.001
+  lr: 0.005
   dropout: 0.3
   early_stopping_patience: 40   # épocas sem melhora na val_loss -> parar
   val_size: 0.15                 # fração do treino usada para validação
+  weight_decay: 0.01             # L2 no Adam — reduz overfitting nos neurais
   # GRU / LSTM
   hidden_size: 64
   n_layers: 1

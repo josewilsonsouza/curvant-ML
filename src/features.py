@@ -174,6 +174,14 @@ def extrair_features(
         row['distance_car_curve']          = float(
             janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
         )
+        # Velocidade cinemática prevista na entrada da curva assumindo desaceleração
+        # de conforto constante ao longo da janela pré-curva.
+        # v_pred² = max(0, v_mean² - 2·a·d)  — usa apenas dados da janela, sem leakage.
+        _d_window = row['distance_car_curve']
+        _v_mean_ms = float(janela['vehicle_speed'].mean()) / 3.6
+        _v_pred_sq = max(0.0, _v_mean_ms ** 2 - 2.0 * janela_acel_confort * _d_window)
+        row['v_pred_kinematica'] = round(float(np.sqrt(_v_pred_sq) * 3.6), 3)  # km/h
+
         # Contagem de pontos na janela pré-curva onde cada critério dispara,
         # calculados diretamente dos sensores (independente dos rótulos de
         # caracterização, que agora cobrem apenas os segmentos de curva).
@@ -258,8 +266,13 @@ def extrair_features(
             row['isl_max']   = isl_max
             row['isl_class'] = classificar_isl(isl_max)
             row['isl_alto']  = 1 if isl_max >= 0.8 else 0
+            # Velocidade real no ponto de pico ISL — target fisicamente fundamentado.
+            # Prever v_critica equivale a prever ISL: ISL = v_critica²/(R×g×μ).
+            idx_max          = isl_vals.idxmax()
+            row['v_critica'] = float(pts_curva.loc[idx_max, 'vehicle_speed'])  # km/h
         else:
             row['isl_mean'] = row['isl_max'] = row['isl_class'] = row['isl_alto'] = np.nan
+            row['v_critica'] = np.nan
 
         # ISL baseado no sensor OBD: ISL_sensor = |accel_y| / (g·μ)
         # Independe do raio GPS — usa a aceleração lateral medida diretamente.
@@ -300,13 +313,20 @@ def extrair_features(
         else:
             row['curve_dnit_num'] = 0
 
-        # F4 — geometria real da curva seguinte (Modo 1).
+        # F4 — geometria real da curva seguinte.
         # Cópias de curve_raio_* com nome distinto para não conflitar com _COLS_EXCLUIR.
-        # O pipeline define modo_rota_conhecida=0 e zera f4_* para Modo 2.
         row['f4_raio_min']  = row.get('curve_raio_min', np.nan)
         row['f4_raio_mean'] = row.get('curve_raio_mean', np.nan)
         row['f4_dnit_num']  = row.get('curve_dnit_num', 0)
-        row['modo_rota_conhecida'] = 1  # default Modo 1; pipeline sobrescreve para Modo 2
+
+        # ISL estimado na entrada: usa raio real + velocidade de entrada
+        # isl = v²/(R × g × μ), μ=0.6 — mesmo cálculo do target isl_max
+        # Em Modo 2 f4_raio_min=0, então isl_entry=0 (sem informação geométrica)
+        _r = row.get('f4_raio_min', np.nan)
+        if pd.notna(_r) and _r > 0:
+            row['isl_entry_estimate'] = float((v_entry / 3.6) ** 2 / (_r * 9.81 * 0.6))
+        else:
+            row['isl_entry_estimate'] = 0.0
 
         dados_janela.append(row)
 

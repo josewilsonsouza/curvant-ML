@@ -43,8 +43,8 @@ _COLS_EXCLUIR = [
     # targets de aceleração dentro da curva
     'curve_accel_y_max', 'curve_accel_y_mean',
     'curve_abs_accel_max', 'curve_abs_accel_mean',
-    # targets de velocidade
-    'v_excess', 'manobra_velocidade', 'v_safe_dnit', 'v_entry_ratio',
+    # targets de velocidade (dentro ou derivados da curva)
+    'v_excess', 'manobra_velocidade', 'v_safe_dnit', 'v_entry_ratio', 'v_critica',
     # geometria bruta da curva atual (leakage; usar f4_* em Modo 1)
     'curve_raio_min', 'curve_raio_mean', 'curve_dnit_num',
 ]
@@ -88,7 +88,7 @@ def _split_por_rota(
         .dropna(subset=[target])
     )
 
-    # NaN em features de raio (f4_raio_* em Modo 2) são preenchidas com a mediana
+    # NaN em features de raio são preenchidas com a mediana
     # do conjunto de treino — semanticamente "raio típico" em vez de 0 (curvatura
     # infinita) que o StandardScaler interpretaria como outlier extremo negativo.
     # Demais NaN (features opcionais ausentes) ficam como 0.
@@ -571,7 +571,7 @@ def _optuna_xgb(
         else:
             clf     = XGBRegressor(eval_metric='rmse', **params)
             scoring = 'r2'
-        pipe   = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
+        pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=(task == 'classify'))
         cv     = GroupKFold(n_splits=cv_folds)
         scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring, n_jobs=-1)
         return scores['test_score'].mean()
@@ -614,9 +614,36 @@ def _optuna_rf(
         else:
             clf     = RandomForestRegressor(**params)
             scoring = 'r2'
-        pipe   = Pipeline([('scaler', StandardScaler()), ('clf', clf)])
+        pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=(task == 'classify'))
         cv     = GroupKFold(n_splits=cv_folds)
         scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring, n_jobs=-1)
+        return scores['test_score'].mean()
+
+    study = optuna.create_study(direction='maximize')
+    study.optimize(objective, n_trials=n_trials, timeout=timeout)
+    return study.best_params
+
+
+def _optuna_lr(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    groups: np.ndarray,
+    cv_folds: int = 5,
+    n_trials: int = 20,
+    timeout: int | None = None,
+    random_state: int = 42,
+) -> dict:
+    """Tuna LogisticRegression (C) com Optuna usando GroupKFold."""
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    def objective(trial):
+        C = trial.suggest_float('C', 1e-4, 1e3, log=True)
+        clf = LogisticRegression(C=C, random_state=random_state, max_iter=2000)
+        pipe = _construir_pipeline(clf, random_state=random_state, use_smote=True)
+        cv = GroupKFold(n_splits=cv_folds)
+        scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups,
+                                scoring='f1_weighted', n_jobs=-1)
         return scores['test_score'].mean()
 
     study = optuna.create_study(direction='maximize')
@@ -632,6 +659,7 @@ def aplicar_modelos_ml_otimizados(
     cv_folds: int = 5,
     n_trials_xgb: int = 50,
     n_trials_rf: int = 30,
+    n_trials_lr: int = 20,
     timeout: int | None = None,
     target: str = 'manobra',
     f1_average: str = 'weighted',
@@ -656,8 +684,13 @@ def aplicar_modelos_ml_otimizados(
                          n_trials=n_trials_rf, timeout=timeout, random_state=random_state)
     print(f"  Melhores params RF: {best_rf}")
 
+    print(f"  Tuning LogisticRegression com Optuna ({n_trials_lr} trials{timeout_str})...")
+    best_lr = _optuna_lr(X_train, y_train, groups_train, cv_folds=cv_folds,
+                         n_trials=n_trials_lr, timeout=timeout, random_state=random_state)
+    print(f"  Melhores params LR: {best_lr}")
+
     modelos = {
-        'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
+        'Regressão Logística': LogisticRegression(**best_lr, random_state=random_state, max_iter=2000),
         'SVM':                 svm.SVC(kernel='linear', random_state=random_state),
         'Árvore de Decisão':   DecisionTreeClassifier(random_state=random_state),
         'Floresta Aleatória':  RandomForestClassifier(**best_rf),
@@ -955,5 +988,3 @@ def treinar_regressao(
         column_format='lccccc',
     )
     return df_res
-
-

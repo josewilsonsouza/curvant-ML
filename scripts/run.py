@@ -28,10 +28,11 @@ from src.pipeline import (
     etapa_curvas, etapa_analise_conducao, etapa_features,
     etapa_ml_classico, etapa_ml_otimizado, etapa_mlp_sklearn,
     etapa_isl_modelo, etapa_accel_regressao, etapa_regressao_ts,
+    etapa_importancia_features,
 )
 from utils.config import carregar_config
 
-_FLAGS_MODELO = ('classical', 'optuna', 'isl', 'mlp', 'pytorch', 'ts')
+_FLAGS_MODELO = ('classical', 'optuna', 'isl', 'mlp', 'pytorch', 'ts', 'fi')
 
 
 _CACHE_ANALYSIS  = 'data/.cache_df_analysis.parquet'
@@ -63,7 +64,7 @@ def main(args: argparse.Namespace) -> None:
     if data_path is None:
         raise FileNotFoundError("Nenhum arquivo de dados encontrado em data/")
 
-    cache_features = _CACHE_FEATURES.format(modo=args.modo)
+    cache_features = _CACHE_FEATURES
     usar_cache = (
         not args.rebuild
         and _cache_valido(_CACHE_ANALYSIS, data_path)
@@ -99,8 +100,7 @@ def main(args: argparse.Namespace) -> None:
         df_analysis = etapa_analise_conducao(dfs_curves, cfg, args.plot)
 
         print("\n[5/5] Identificando trechos curvos e extraindo features...")
-        features_df = etapa_features(df_analysis, cfg, modo=args.modo)
-        print(f"  Modo: {args.modo}")
+        features_df = etapa_features(df_analysis, cfg)
 
         # Salva cache para próximas execuções
         df_analysis.to_parquet(_CACHE_ANALYSIS, index=False)
@@ -124,6 +124,10 @@ def main(args: argparse.Namespace) -> None:
         print("\n[ML] MLP sklearn (GridSearchCV)...")
         etapa_mlp_sklearn(features_df, cfg)
 
+    if args.fi:
+        print("\n[FI] Importância de features (XGBoost)...")
+        etapa_importancia_features(features_df, cfg)
+
     if args.pytorch:
         print("\n[DL] MLP multi-tarefa PyTorch...")
         from src.pipeline import etapa_pytorch
@@ -142,8 +146,6 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='CurvantML — pipeline completo de experimentos'
     )
-    parser.add_argument('--modo',      choices=['modo1', 'modo2'], default='modo1',
-                        help='Modo 1: features com geometria da curva; Modo 2: só OBD+GPS (default: modo1)')
     parser.add_argument('--plot',      action='store_true', help='Gerar plots durante a execução')
     parser.add_argument('--classical', action='store_true', help='Modelos clássicos (LogReg, SVM, RF, XGB)')
     parser.add_argument('--optuna',    action='store_true', help='Optuna para XGBoost e RandomForest')
@@ -151,5 +153,6 @@ if __name__ == '__main__':
     parser.add_argument('--mlp',       action='store_true', help='MLP sklearn com GridSearchCV')
     parser.add_argument('--pytorch',   action='store_true', help='MLP multi-tarefa PyTorch (4 heads)')
     parser.add_argument('--ts',        action='store_true', help='Regressão série temporal (GRU/LSTM/CNN1D/MLP)')
+    parser.add_argument('--fi',        action='store_true', help='Importância de features (XGBoost gain)')
     parser.add_argument('--rebuild',   action='store_true', help='Ignora cache e reprocessa etapas 1-5')
     main(parser.parse_args())

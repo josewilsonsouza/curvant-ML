@@ -56,6 +56,8 @@ from src.models import _base_route
 _SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
 
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
+_G_TS  = 9.81
+_MU_TS = 0.6
 
 # Targets de classificação e número de classes
 _TARGETS_BINARIOS_TS  = {
@@ -64,6 +66,12 @@ _TARGETS_BINARIOS_TS  = {
 }
 _TARGETS_MULTICLASS_TS = {'isl_class': 3}
 _TARGETS_CLASSIF_TS    = _TARGETS_BINARIOS_TS | set(_TARGETS_MULTICLASS_TS)
+
+
+def _v_para_isl_class(v_kmh: np.ndarray, raios: np.ndarray) -> np.ndarray:
+    """Converte velocidade (km/h) + raio (m) → classe ISL (0=baixo,1=medio,2=alto)."""
+    isl = (v_kmh / 3.6) ** 2 / (raios * _G_TS * _MU_TS)
+    return np.where(isl < 0.5, 0, np.where(isl < 0.8, 1, 2)).astype(int)
 
 
 def _detectar_task(target: str, task_cfg: str) -> tuple[str, int]:
@@ -84,28 +92,39 @@ def extrair_sequencias_precurva(
     n_timesteps: int,
     target: str = 'curve_accel_y_max',
     scalares_extras: list[str] | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """
     Para cada curva em features_df extrai a série temporal da janela pré-curva
     de df_analysis (usando time_inicio/time_fim) e reamostrada para n_timesteps.
 
+    Canais temporais (axis=2):
+        0 … n_sensors-1  : sensores OBD (vehicle_speed, accel_x, accel_y, engine_rpm …)
+        n_sensors         : distancia_restante — distância até a curva em cada timestep
+                            (d_max_in_window − distancia_acumulada, normalizada para [0,1]).
+                            Canal decrescente: zero no instante de entrada na curva.
+
     scalares_extras: colunas de features_df adicionadas como canais constantes
-    (mesmo valor em todos os timesteps).
+    (mesmo valor em todos os timesteps), APÓS os canais temporais.
 
     Retorna:
-        X        — (n, n_timesteps, n_sensors [+ n_extras]) float32
-        y        — (n,) float32
-        id_route — (n,) str
+        X          — (n, n_timesteps, n_sensors + 1 [+ n_extras]) float32
+        y          — (n,) float32
+        id_route   — (n,) str
+        n_temporal — número de canais temporais (n_sensors + 1)
     """
     sensors_disponiveis = [s for s in sensors if s in df_analysis.columns]
     extras = [c for c in (scalares_extras or []) if c in features_df.columns]
     x_new  = np.linspace(0, 1, n_timesteps)
 
+    has_dist = 'distancia_acumulada' in df_analysis.columns
+    dist_cols = sensors_disponiveis + ['time_sec'] + (['distancia_acumulada'] if has_dist else [])
+
     grupos = {
-        rota: sub[sensors_disponiveis + ['time_sec']].reset_index(drop=True)
+        rota: sub[dist_cols].reset_index(drop=True)
         for rota, sub in df_analysis.groupby('id_route')
     }
 
+    n_temporal = len(sensors_disponiveis) + (1 if has_dist else 0)
     sequences, targets, rotas = [], [], []
 
     for _, row in features_df.iterrows():
@@ -132,6 +151,19 @@ def extrair_sequencias_precurva(
             axis=1,
         )  # (n_timesteps, n_sensors)
 
+        # distancia_restante: d_max − d(t), decreasing toward zero at curve entry
+        if has_dist:
+            d_raw = sub.loc[mask, 'distancia_acumulada'].values.astype(np.float64)
+            d_interp = np.interp(x_new, x_old, d_raw)
+            d_restante = d_interp[-1] - d_interp          # decreasing to ~0
+            d_range = d_restante.max() - d_restante.min()
+            if d_range > 0:
+                d_restante = d_restante / d_range          # normalize [0, 1]
+            resampled = np.concatenate(
+                [resampled, d_restante[:, np.newaxis].astype(np.float32)],
+                axis=1,
+            )
+
         for col in extras:
             val = row.get(col)
             val = 0.0 if pd.isna(val) else float(val)
@@ -147,51 +179,60 @@ def extrair_sequencias_precurva(
     if not sequences:
         raise ValueError("Nenhuma sequência válida extraída. Verifique time_inicio/time_fim em features_df.")
 
-    return np.array(sequences, dtype=np.float32), np.array(targets, dtype=np.float32), np.array(rotas)
+    return np.array(sequences, dtype=np.float32), np.array(targets, dtype=np.float32), np.array(rotas), n_temporal
 
 
 # ── Modelos neurais ───────────────────────────────────────────────────────────
 
 class GRURegressor(nn.Module):
-    def __init__(self, n_sensors: int, hidden_size: int = 64, n_layers: int = 1,
+    def __init__(self, n_sensors: int, n_scalars: int = 0, hidden_size: int = 64, n_layers: int = 1,
                  dropout: float = 0.3, n_out: int = 1):
         super().__init__()
+        self.n_sensors = n_sensors
         self.gru = nn.GRU(
             n_sensors, hidden_size, n_layers,
             batch_first=True, dropout=dropout if n_layers > 1 else 0.0,
         )
         self.head = nn.Sequential(
-            nn.Linear(hidden_size, 32), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden_size + n_scalars, 32), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(32, n_out),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _, h = self.gru(x)
-        return self.head(h[-1]).squeeze(-1)
+        x_seq   = x[:, :, :self.n_sensors]
+        scalars = x[:, 0, self.n_sensors:]
+        _, h    = self.gru(x_seq)
+        z       = torch.cat([h[-1], scalars], dim=1)
+        return self.head(z).squeeze(-1)
 
 
 class LSTMRegressor(nn.Module):
-    def __init__(self, n_sensors: int, hidden_size: int = 64, n_layers: int = 1,
+    def __init__(self, n_sensors: int, n_scalars: int = 0, hidden_size: int = 64, n_layers: int = 1,
                  dropout: float = 0.3, n_out: int = 1):
         super().__init__()
+        self.n_sensors = n_sensors
         self.lstm = nn.LSTM(
             n_sensors, hidden_size, n_layers,
             batch_first=True, dropout=dropout if n_layers > 1 else 0.0,
         )
         self.head = nn.Sequential(
-            nn.Linear(hidden_size, 32), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(hidden_size + n_scalars, 32), nn.ReLU(), nn.Dropout(dropout),
             nn.Linear(32, n_out),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        _, (h, _) = self.lstm(x)
-        return self.head(h[-1]).squeeze(-1)
+        x_seq   = x[:, :, :self.n_sensors]
+        scalars = x[:, 0, self.n_sensors:]
+        _, (h, _) = self.lstm(x_seq)
+        z       = torch.cat([h[-1], scalars], dim=1)
+        return self.head(z).squeeze(-1)
 
 
 class CNN1DRegressor(nn.Module):
-    def __init__(self, n_sensors: int, channels: list[int] = None,
+    def __init__(self, n_sensors: int, n_scalars: int = 0, channels: list[int] = None,
                  kernel_size: int = 3, dropout: float = 0.3, n_out: int = 1):
         super().__init__()
+        self.n_sensors = n_sensors
         if channels is None:
             channels = [32, 64]
         layers, in_ch = [], n_sensors
@@ -205,31 +246,38 @@ class CNN1DRegressor(nn.Module):
         self.pool    = nn.AdaptiveAvgPool1d(4)
         self.dropout = nn.Dropout(dropout)
         self.head    = nn.Sequential(
-            nn.Linear(in_ch * 4, 32), nn.ReLU(),
+            nn.Linear(in_ch * 4 + n_scalars, 32), nn.ReLU(),
             nn.Linear(32, n_out),
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.permute(0, 2, 1)
-        x = self.conv(x)
-        x = self.pool(x).flatten(1)
-        x = self.dropout(x)
-        return self.head(x).squeeze(-1)
+        x_seq   = x[:, :, :self.n_sensors].permute(0, 2, 1)
+        scalars = x[:, 0, self.n_sensors:]
+        z       = self.pool(self.conv(x_seq)).flatten(1)
+        z       = self.dropout(z)
+        z       = torch.cat([z, scalars], dim=1)
+        return self.head(z).squeeze(-1)
 
 
 class MLPRegressor(nn.Module):
-    def __init__(self, n_sensors: int, n_timesteps: int,
+    def __init__(self, n_sensors: int, n_timesteps: int, n_scalars: int = 0,
                  hidden_size: int = 128, dropout: float = 0.3, n_out: int = 1):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(n_sensors * n_timesteps, hidden_size), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden_size, 64),                      nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(64, n_out),
-        )
+        self.n_sensors = n_sensors
+        flat_in = n_sensors * n_timesteps + n_scalars
+        self.fc1  = nn.Linear(flat_in, hidden_size)
+        self.fc2  = nn.Linear(hidden_size, 64)
+        self.fc3  = nn.Linear(64, n_out)
+        self.act  = nn.ReLU()
+        self.drop = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x).squeeze(-1)
+        x_seq   = x[:, :, :self.n_sensors].flatten(1)
+        scalars = x[:, 0, self.n_sensors:]
+        z = torch.cat([x_seq, scalars], dim=1)
+        z = self.drop(self.act(self.fc1(z)))
+        z = self.drop(self.act(self.fc2(z)))
+        return self.fc3(z).squeeze(-1)
 
 
 _MODELOS_TS   = {'gru': GRURegressor, 'lstm': LSTMRegressor, 'cnn1d': CNN1DRegressor, 'mlp': MLPRegressor}
@@ -305,6 +353,7 @@ def _treinar_um_classico(
     rnd: int,
     task: str = 'regression',
     n_classes: int = 1,
+    raios_test: np.ndarray | None = None,
 ) -> dict:
     label = {'linear': 'Ridge' if task == 'regression' else 'LogisticReg',
              'rf': 'RandomForest', 'xgboost': 'XGBoost'}[nome]
@@ -339,22 +388,47 @@ def _treinar_um_classico(
         y_pred = clf.predict(X_test_flat)
         r2     = r2_score(y_test, y_pred)
         mae    = mean_absolute_error(y_test, y_pred)
-        print(f"  {label:<15s} R²: {r2:.4f}  MAE: {mae:.4f} m/s²")
+        print(f"  {label:<15s} R²: {r2:.4f}  MAE: {mae:.4f} km/h")
+
+        cls_pred_isl = cls_true_isl = None
+        if target == 'v_critica' and raios_test is not None:
+            cls_pred_isl = _v_para_isl_class(y_pred, raios_test)
+            cls_true_isl = _v_para_isl_class(y_test, raios_test)
+            f1_isl  = f1_score(cls_true_isl, cls_pred_isl, average='macro', zero_division=0)
+            acc_isl = accuracy_score(cls_true_isl, cls_pred_isl)
+            print(f"    → isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
 
         if plot:
             os.makedirs('results', exist_ok=True)
+            unit = 'km/h' if target == 'v_critica' else 'm/s²'
             fig, ax = plt.subplots(figsize=(5, 4))
             ax.scatter(y_test, y_pred, alpha=0.4, s=15)
             lim = [min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())]
             ax.plot(lim, lim, 'r--', lw=1)
-            ax.set_xlabel(f'{target} real (m/s²)')
-            ax.set_ylabel(f'{target} previsto (m/s²)')
+            ax.set_xlabel(f'{target} real ({unit})')
+            ax.set_ylabel(f'{target} previsto ({unit})')
             ax.set_title(f'{label} — R²={r2:.3f}  MAE={mae:.3f}')
             fig.tight_layout()
             fig.savefig(f'results/ts_scatter_{nome}.pdf', bbox_inches='tight')
             plt.close(fig)
 
-        return {'Modelo': label, 'R²': r2, 'MAE (m/s²)': mae}
+            if cls_pred_isl is not None:
+                labels_isl = ['baixo', 'medio', 'alto']
+                cm = confusion_matrix(cls_true_isl, cls_pred_isl, labels=[0, 1, 2])
+                fig, ax = plt.subplots(figsize=(4, 3))
+                im = ax.imshow(cm, cmap='Blues')
+                for i in range(3):
+                    for j in range(3):
+                        ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+                ax.set_xticks([0, 1, 2]); ax.set_xticklabels(labels_isl)
+                ax.set_yticks([0, 1, 2]); ax.set_yticklabels(labels_isl)
+                ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
+                ax.set_title(f'{label} — isl_class via v_critica\nF1={f1_isl:.3f}')
+                fig.colorbar(im, ax=ax); fig.tight_layout()
+                fig.savefig(f'results/ts_cm_{nome}_isl_via_vcritica.pdf', bbox_inches='tight')
+                plt.close(fig)
+
+        return {'Modelo': label, 'R²': r2, 'MAE (km/h)': mae}
 
 
 # ── Neural ────────────────────────────────────────────────────────────────────
@@ -380,8 +454,13 @@ def _treinar_um_neural(
     n_classes: int = 1,
     patience: int = 40,
     val_size: float = 0.15,
+    n_seq_sensor: int = 0,
+    weight_decay: float = 0.0,
+    raios_test: np.ndarray | None = None,
 ) -> nn.Module:
-    n_sensors = X_train.shape[2]
+    n_total   = X_train.shape[2]
+    n_sens    = n_seq_sensor if n_seq_sensor > 0 else n_total
+    n_scalars = n_total - n_sens
     n_out     = 1 if (task == 'regression' or n_classes == 2) else n_classes
 
     # Split de validação (dentro do treino) para early stopping
@@ -403,20 +482,30 @@ def _treinar_um_neural(
         y_tensor_val = torch.LongTensor(y_val.astype(np.int64))
 
     X_tensor_val = torch.FloatTensor(X_val)
+    effective_batch = batch_size
+    if len(X_tr) < batch_size:
+        effective_batch = max(4, len(X_tr) // 2)
+        print(f"    [AVISO] {len(X_tr)} amostras de treino < batch_size={batch_size}; "
+              f"usando batch_size={effective_batch}")
     loader = DataLoader(
         TensorDataset(torch.FloatTensor(X_tr), y_tensor_tr),
-        batch_size=batch_size, shuffle=True, drop_last=True,
+        batch_size=effective_batch, shuffle=True, drop_last=True,
     )
+    if len(loader) == 0:
+        raise ValueError(
+            f"DataLoader vazio após ajuste ({len(X_tr)} amostras). "
+            "Para --ts, janela_distancia deve ser >= 50 m para garantir sequências válidas."
+        )
 
     if model_type in ('gru', 'lstm'):
-        model = _MODELOS_TS[model_type](n_sensors, hidden_size=hidden, n_layers=n_layers,
-                                        dropout=dropout, n_out=n_out)
+        model = _MODELOS_TS[model_type](n_sens, n_scalars=n_scalars, hidden_size=hidden,
+                                        n_layers=n_layers, dropout=dropout, n_out=n_out)
     elif model_type == 'mlp':
-        model = MLPRegressor(n_sensors, n_timesteps=n_ts, hidden_size=hidden,
-                             dropout=dropout, n_out=n_out)
+        model = MLPRegressor(n_sens, n_timesteps=n_ts, n_scalars=n_scalars,
+                             hidden_size=hidden, dropout=dropout, n_out=n_out)
     else:
-        model = _MODELOS_TS[model_type](n_sensors, channels=channels, kernel_size=kernel,
-                                        dropout=dropout, n_out=n_out)
+        model = _MODELOS_TS[model_type](n_sens, n_scalars=n_scalars, channels=channels,
+                                        kernel_size=kernel, dropout=dropout, n_out=n_out)
 
     if task == 'regression':
         loss_fn = nn.MSELoss()
@@ -433,7 +522,7 @@ def _treinar_um_neural(
         w /= w.sum()
         loss_fn = nn.CrossEntropyLoss(weight=torch.FloatTensor(w))
 
-    optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer  = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler  = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
     loss_label = 'MSE' if task == 'regression' else 'Loss'
 
@@ -497,19 +586,44 @@ def _treinar_um_neural(
         y_pred = y_scaler.inverse_transform(raw_out.numpy().reshape(-1, 1)).ravel()
         r2     = r2_score(y_test, y_pred)
         mae    = mean_absolute_error(y_test, y_pred)
-        print(f"  {model_type.upper()} — R²: {r2:.4f}  MAE: {mae:.4f} m/s²")
+        unit = 'km/h' if target == 'v_critica' else 'm/s²'
+        print(f"  {model_type.upper()} — R²: {r2:.4f}  MAE: {mae:.4f} {unit}")
+
+        cls_pred_isl = cls_true_isl = None
+        if target == 'v_critica' and raios_test is not None:
+            cls_pred_isl = _v_para_isl_class(y_pred, raios_test)
+            cls_true_isl = _v_para_isl_class(y_test, raios_test)
+            f1_isl  = f1_score(cls_true_isl, cls_pred_isl, average='macro', zero_division=0)
+            acc_isl = accuracy_score(cls_true_isl, cls_pred_isl)
+            print(f"    → isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
 
         if plot:
             fig, ax = plt.subplots(figsize=(5, 4))
             ax.scatter(y_test, y_pred, alpha=0.4, s=15)
             lim = [min(y_test.min(), y_pred.min()), max(y_test.max(), y_pred.max())]
             ax.plot(lim, lim, 'r--', lw=1)
-            ax.set_xlabel(f'{target} real (m/s²)')
-            ax.set_ylabel(f'{target} previsto (m/s²)')
+            ax.set_xlabel(f'{target} real ({unit})')
+            ax.set_ylabel(f'{target} previsto ({unit})')
             ax.set_title(f'{model_type.upper()} — R²={r2:.3f}  MAE={mae:.3f}')
             fig.tight_layout()
             fig.savefig(f'results/ts_scatter_{model_type}_{target}.pdf', bbox_inches='tight')
             plt.close(fig)
+
+            if cls_pred_isl is not None:
+                labels_isl = ['baixo', 'medio', 'alto']
+                cm = confusion_matrix(cls_true_isl, cls_pred_isl, labels=[0, 1, 2])
+                fig, ax = plt.subplots(figsize=(4, 3))
+                im = ax.imshow(cm, cmap='Blues')
+                for i in range(3):
+                    for j in range(3):
+                        ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+                ax.set_xticks([0, 1, 2]); ax.set_xticklabels(labels_isl)
+                ax.set_yticks([0, 1, 2]); ax.set_yticklabels(labels_isl)
+                ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
+                ax.set_title(f'{model_type.upper()} — isl_class via v_critica\nF1={f1_isl:.3f}')
+                fig.colorbar(im, ax=ax); fig.tight_layout()
+                fig.savefig(f'results/ts_cm_{model_type}_isl_via_vcritica.pdf', bbox_inches='tight')
+                plt.close(fig)
 
     else:
         avg = 'macro' if n_classes > 2 else 'binary'
@@ -578,6 +692,7 @@ def treinar_regressao_ts(
     scalares_cfg = ts_cfg.get('scalares_extras', [])
     patience     = int(ts_cfg.get('early_stopping_patience', 40))
     val_size_nn  = float(ts_cfg.get('val_size', 0.15))
+    weight_decay = float(ts_cfg.get('weight_decay', 0.01))
 
     print(f"  Tarefa: {task.upper()} | Modelos: {modelos} | target: {target}")
     print(f"  Timesteps: {n_ts} | Sensores: {sensors}")
@@ -598,12 +713,11 @@ def treinar_regressao_ts(
     disponiveis    = [c for c in scalares_todos if c in features_df.columns]
     print(f"  Canais escalares extras: {disponiveis}")
 
-    X, y, rotas = extrair_sequencias_precurva(
+    X, y, rotas, n_seq_sensor = extrair_sequencias_precurva(
         df_analysis, features_df, sensors, n_ts, target,
         scalares_extras=disponiveis,
     )
-    n_sensors    = X.shape[2]
-    n_seq_sensor = len([s for s in sensors if s in df_analysis.columns])
+    n_sensors = X.shape[2]
     print(f"  {len(X)} sequências  |  canais: {n_sensors} "
           f"({n_seq_sensor} temporais + {len(disponiveis)} escalares)")
 
@@ -622,10 +736,20 @@ def treinar_regressao_ts(
         route_y.setdefault(_base_route(r), []).append(yi)
 
     base_rotas    = list(route_y.keys())
+    if len(base_rotas) < 2:
+        raise ValueError(f"Número insuficiente de rotas ({len(base_rotas)}) para realizar o split de treino/teste. Verifique as configurações de features ou filtros de dataset.")
+
     route_stats   = np.array([np.median(route_y[r]) for r in base_rotas])
     n_bins        = min(3, len(base_rotas) // 2)
-    bins          = np.quantile(route_stats, np.linspace(0, 1, n_bins + 1))
-    strata        = np.digitize(route_stats, bins[1:-1])
+    
+    if n_bins >= 1:
+        bins          = np.quantile(route_stats, np.linspace(0, 1, n_bins + 1))
+        strata        = np.digitize(route_stats, bins[1:-1])
+        _, counts     = np.unique(strata, return_counts=True)
+        if any(c < 2 for c in counts):
+            strata = None
+    else:
+        strata = None
 
     train_base, _ = train_test_split(base_rotas, test_size=test_size, random_state=rnd, stratify=strata)
     train_mask    = np.array([_base_route(r) in set(train_base) for r in rotas])
@@ -640,6 +764,12 @@ def treinar_regressao_ts(
         vals, cnts = np.unique(y_test.astype(int), return_counts=True)
         dist = ' | '.join(f'cls{v}:{c}' for v, c in zip(vals, cnts))
         print(f"  Split — treino: {len(y_train)}  teste: {len(y_test)} ({dist})")
+
+    # Extrai raios do teste antes da normalização (canal escalar constante)
+    raios_test = None
+    if target == 'v_critica' and 'f4_raio_min' in disponiveis:
+        raio_idx   = n_seq_sensor + disponiveis.index('f4_raio_min')
+        raios_test = X_test[:, 0, raio_idx].copy()   # valores originais, não normalizados
 
     # Normaliza sensores (fit apenas no treino) — compartilhado por todos os modelos
     for j in range(n_sensors):
@@ -658,6 +788,7 @@ def treinar_regressao_ts(
             _treinar_um_classico(
                 model_type, X_train_flat, X_test_flat, y_train, y_test,
                 target=target, plot=plot, rnd=rnd, task=task, n_classes=n_classes,
+                raios_test=raios_test,
             )
         else:
             _treinar_um_neural(
@@ -668,4 +799,6 @@ def treinar_regressao_ts(
                 channels=channels, kernel=kernel, n_ts=n_ts,
                 task=task, n_classes=n_classes,
                 patience=patience, val_size=val_size_nn,
+                n_seq_sensor=n_seq_sensor, weight_decay=weight_decay,
+                raios_test=raios_test,
             )

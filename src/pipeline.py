@@ -11,6 +11,7 @@ import pandas as pd
 from src.characterization import caracterizar_conducao
 from src.curve_detection import detectar_curvas, identificar_trechos_curvos
 from src.features import extrair_features
+from src.montecarlo import aplicar_mc_features
 from utils.data import contar_curvas
 
 
@@ -67,23 +68,13 @@ def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> p
     return df_analysis
 
 
-def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') -> pd.DataFrame:
+def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """
     Etapas 5-6: extrai features e alvos por curva.
 
-    modo='modo1' — rota pré-conhecida (ex: frota com rotas fixas, navegação GPS).
-        O trajeto completo (lat, lon) está disponível antes da viagem.
-        B-spline ajustada sobre todos os pontos é legítima — o sistema pode
-        "ver" a curva à frente porque a rota já está mapeada.
-        Features disponíveis: F1 + F2 + F3 + F4 + F5.
-
-    modo='modo2' — rota desconhecida, somente dados OBD acumulados até o instante atual.
-        Apenas pontos já percorridos estão disponíveis para o modelo.
-        F4 (geometria real da curva) é zerrada porque exige conhecimento futuro.
-        F3 (raio estimado via B-spline) também é zerrada: a B-spline foi ajustada
-        sobre o trajeto inteiro (incluindo pontos além da posição atual), o que
-        constituiria look-ahead num dispositivo OBD em tempo real.
-        Features disponíveis: F1 + F2 (sem raio) + F5.
+    Assume que a rota é pré-conhecida (ex: frota com rotas fixas, navegação GPS)
+    e que o trajeto completo (lat, lon) está disponível.
+    Features disponíveis: F1 + F2 + F3 + F4 + F5.
     """
     df_analysis = df_analysis.copy()
     for col in ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']:
@@ -100,18 +91,6 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') ->
         janela_distancia_min=ft.get('janela_distancia_min', 50.0),
         janela_distancia_max=ft.get('janela_distancia_max', 400.0),
     )
-
-    if modo == 'modo2':
-        # F4 — geometria real da curva seguinte (requer rota pré-conhecida)
-        _cols_f4 = ['f4_raio_min', 'f4_raio_mean', 'f4_dnit_num']
-        # F3 — raio estimado via B-spline global: usa pontos futuros do trajeto,
-        #       indisponíveis num cenário de rota desconhecida em tempo real
-        _cols_f3 = ['janela_raio_min', 'janela_raio_mean', 'janela_raio_last',
-                    'v_entry_sq_over_raio_est']
-        for col in _cols_f4 + _cols_f3:
-            if col in features_df.columns:
-                features_df[col] = np.nan
-        features_df['modo_rota_conhecida'] = 0
 
     n_perigosa = features_df['manobra_combinado_curva'].sum()
     n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
@@ -135,6 +114,16 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict, modo: str = 'modo1') ->
         label='tab:criterios_risco',
         position='h',
         column_format='lcccc',
+    )
+
+    mc_cfg = cfg.get('montecarlo', {})
+    rnd    = cfg.get('ml', {}).get('random_state', 42)
+    features_df = aplicar_mc_features(
+        features_df, df_analysis,
+        n_sim=mc_cfg.get('n_sim', 1000),
+        k_ultimos=mc_cfg.get('k_ultimos', 10),
+        sigma_min=mc_cfg.get('sigma_min', 0.5),
+        random_state=rnd,
     )
 
     return features_df
@@ -173,6 +162,7 @@ def etapa_ml_otimizado(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.D
         cv_folds=ml['cv_folds'],
         n_trials_xgb=opt.get('n_trials_xgb', opt.get('n_trials', 50)),
         n_trials_rf=opt.get('n_trials_rf', opt.get('n_trials', 30)),
+        n_trials_lr=opt.get('n_trials_lr', 20),
         timeout=opt.get('timeout'),
     )
     return resultados
@@ -274,7 +264,8 @@ def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
         epochs=pt_cfg.get('epochs', 100),
         batch_size=pt_cfg.get('batch_size', 32),
         lr=pt_cfg.get('lr', 1e-3),
-        dropout=pt_cfg.get('dropout', 0.3),
+        dropout=pt_cfg.get('dropout', 0.5),
+        weight_decay=pt_cfg.get('weight_decay', 0.01),
         test_size=cfg['ml']['test_size'],
         random_state=cfg['ml']['random_state'],
     )
@@ -297,6 +288,59 @@ def etapa_mlp_sklearn(features_df: pd.DataFrame, cfg: dict) -> None:
         alpha=sk_cfg.get('alpha', 0.001),
         max_iter=sk_cfg.get('max_iter', 2000),
     )
+
+
+def etapa_importancia_features(features_df: pd.DataFrame, cfg: dict, top_n: int = 40) -> None:
+    """Treina XGBoost e plota importância de features (gain), salva em results/."""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    from xgboost import XGBClassifier
+    from sklearn.preprocessing import StandardScaler
+    from src.models import _split_por_rota, _COLS_EXCLUIR
+
+    ml = cfg['ml']
+    target = 'manobra_combinado_curva'
+    if target not in features_df.columns:
+        print("  [fi] target não encontrado, pulando.")
+        return
+
+    X_train, _, y_train, _, _ = _split_por_rota(
+        features_df, target=target,
+        test_size=ml['test_size'], random_state=ml['random_state'],
+    )
+    feature_cols = [c for c in features_df.columns if c not in _COLS_EXCLUIR]
+
+    scaler  = StandardScaler()
+    X_scaled = scaler.fit_transform(
+        features_df[feature_cols].fillna(0.0).values
+    )
+    X_tr = X_scaled[:X_train.shape[0]]
+
+    clf = XGBClassifier(n_estimators=200, random_state=ml['random_state'],
+                        eval_metric='logloss')
+    clf.fit(X_tr, y_train)
+
+    importances = clf.feature_importances_
+    indices     = importances.argsort()[::-1][:top_n]
+    top_feats   = [feature_cols[i] for i in indices]
+    top_vals    = importances[indices]
+
+    fig, ax = plt.subplots(figsize=(8, max(4, top_n * 0.25)))
+    ax.barh(range(len(top_feats)), top_vals[::-1])
+    ax.set_yticks(range(len(top_feats)))
+    ax.set_yticklabels(top_feats[::-1], fontsize=8)
+    ax.set_xlabel('Importância (gain)')
+    ax.set_title(f'XGBoost — Top {top_n} features ({target})')
+    fig.tight_layout()
+    os.makedirs('results', exist_ok=True)
+    fig.savefig('results/feature_importance_xgb.pdf', bbox_inches='tight')
+    plt.close(fig)
+
+    print(f"\n  Feature importance salva em results/feature_importance_xgb.pdf")
+    print(f"  Top 10 features:")
+    for i in range(min(10, len(top_feats))):
+        print(f"    {i+1:2d}. {top_feats[i]:<40s} {top_vals[i]:.4f}")
 
 
 def etapa_keras(features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
