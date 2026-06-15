@@ -2,9 +2,8 @@
 CurvantML — Simulação de Monte Carlo para estimativa de risco em curvas.
 
 Dado o perfil de velocidade da janela pré-curva e o raio da curva à frente
-(F4 — disponível em Modo 1 via GPS/mapa), simula N cenários de velocidade
-na entrada para produzir uma distribuição de probabilidade sobre as classes
-de ISL (baixo / médio / alto).
+(F4), simula N cenários de velocidade na entrada para produzir uma distribuição
+de probabilidade sobre as classes de ISL (baixo / médio / alto).
 
 Lógica:
   1. Ajusta tendência linear à velocidade nos últimos k pontos da janela.
@@ -15,7 +14,7 @@ Lógica:
   5. Para cada amostra: ISL_i = (v_i / 3,6)² / (R × g × μ).
   6. Classifica e retorna P(baixo), P(médio), P(alto).
 
-Em Modo 2 (f4_raio_min = 0 / NaN), as colunas mc_p_* ficam 0.0.
+Se `f4_raio_min` estiver ausente ou zero, as colunas mc_p_* ficam 0.0.
 """
 
 import numpy as np
@@ -113,7 +112,7 @@ def aplicar_mc_features(
     Adiciona colunas mc_p_baixo, mc_p_medio, mc_p_alto a features_df
     reutilizando a janela pré-curva de df_analysis (time_inicio / time_fim).
 
-    Em Modo 2 (f4_raio_min ausente ou zero), os três campos ficam 0.0.
+    Se o raio da curva não estiver disponível, os três campos ficam 0.0.
     """
     rng = np.random.default_rng(random_state)
 

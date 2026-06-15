@@ -13,7 +13,7 @@ Dados brutos (.parquet)
        ↓
 [2] Detecção de curvas         src/curve_detection.py
        ↓
-[3] Análise de condução        src/driving_analysis.py
+[3] Caracterização de risco    src/characterization.py
        ↓
 [4] Extração de features       src/features.py
        ↓
@@ -22,9 +22,9 @@ Dados brutos (.parquet)
 
 ### Pré-processamento (`src/preprocessing.py`)
 
-- Remove acelações muito altas: |a| > 5 m/s²
+- Remove acelerações muito altas: |a| > 5 m/s²
 - Remove velocidades impossíveis: > 150 km/h (bugs OBD)
-- Se durante 30s o OBD não registrou nenhum ponto (logger pausou, perda de sinal, reconexão), a trajetória é cortada ali e se cria sub-trajetos com `time_sec` reiniciado
+- Se durante 30 s o OBD não registrar nenhum ponto (logger pausou, perda de sinal, reconexão), a trajetória é cortada e surgem sub-trajetos com `time_sec` reiniciado
 
 ### Detecção de Curvas (`src/curve_detection.py`)
 
@@ -38,47 +38,47 @@ Curvatura de Frenet via B-spline cúbica com suavização gaussiana adaptativa. 
 | `aberta` | R ≤ 500 m | D > 2.3° |
 | `suave` | R > 500 m | — |
 
-### 2.3 Análise de Condução Perigosa (`src/driving_analysis.py`)
+### 2.3 Caracterização de risco por curva (`src/characterization.py`)
 
-Janelas deslizantes de 10 s classificadas como **Segura** ou **Perigosa** por dois critérios (Li et al., 2016):
+O pipeline atual aplica `caracterizar_conducao()` a cada segmento contíguo de `curva=True`.
+Para cada curva, a avaliação considera a janela de abordagem definida por `janela_aproximacao` segundos antes do início do segmento, mais todos os pontos do próprio segmento.
+
+Critérios independentes:
 
 | Critério | Definição |
 |---|---|
-| **Aceleração anormal** | Variação acumulada de velocidade Σ\|Δv\| > 20 km/h na janela |
-| **Zigue-zague** | ≥ 3 mudanças de bearing > 15° (wrap-corrected) com aceleração centrípeta v²/R > 0.3 m/s² |
+| **Aceleração anormal** | `manobra_accel` = `max_t sqrt(accel_x² + accel_y²) > 0.7 · μ · g` |
+| **Aceleração lateral** | `manobra_lateral` = `max_t |accel_y| > 2.0` e DNIT ≥ `aberta` (R ≤ 500 m) |
+| **Zigue-zague** | `manobra_ziguezague` = ≥ 3 mudanças de bearing > 15° com alternância de sinal e `ctp_accel > 0.3` |
 
-> **Nota:** O critério *direção perigosa* (baseado em bearing GPS) foi desabilitado (`angulo_max_direcao: 0.0`). Diagnóstico: cria dependência circular com a classificação DNIT (dispara apenas dentro de curvas detectadas), tornando ~98% das curvas Perigosas por construção. O critério foi projetado para giroscópio de alta frequência; com GPS a 1 Hz, o ruído de posição domina o sinal de heading.
+O rótulo combinado é `manobra_combinado = manobra_accel ∨ manobra_lateral ∨ manobra_ziguezague`, e o alias de texto é `'Perigosa'` / `'Segura'`.
+
+> Observação: o módulo `src/driving_analysis.py` permanece no repositório como legado, mas o fluxo principal de `scripts/run.py` utiliza `src/characterization.py`.
+
+Se a coluna `curva` estiver ausente, o código ainda pode cair em um fluxo legado de janelas fixas, mas o fluxo atual parte sempre de curvas detectadas.
 
 ### 2.4 Extração de Features (`src/features.py`)
 
-Para cada curva detectada, extrai features da janela de **10 s anteriores à entrada na curva** — informações disponíveis em tempo real:
+Para cada curva detectada, o pipeline extrai features da janela pré-curva imediatamente anterior à entrada.
+O tamanho da janela é configurável:
+- se `features.janela_distancia` não for `null`, usa uma distância fixa antes da curva (atualmente 50 m no `config.yaml`)
+- caso contrário, usa distância dinâmica baseada na desaceleração de conforto `v²/(2a)` com clip em `[janela_distancia_min, janela_distancia_max]`
 
-**Estatísticas clássicas** (5 × 4 variáveis = 20 features):
+Features extraídas por curva:
 
-| Variável | Estatísticas |
-|---|---|
-| `vehicle_speed`, `engine_rpm`, `accel_x`, `accel_y` | mean, std, median, max, min |
+- F1: estatísticas de `vehicle_speed`, `engine_rpm`, `accel_x`, `accel_y` — mean, std, median, max, min, slope, cv, plus late-window mean/slope
+- F2: `v_entry`, `v_speed_drop`, jerk máximo/σ, `v_entry_sq_over_raio_est`, contadores de eventos de risco na janela (`n_perigo_accel_janela`, `n_perigo_lateral_janela`)
+- F3: geometria estimada da abordagem — `janela_raio_min`, `janela_raio_mean`, `janela_raio_last`
+- F4: geometria real da curva seguinte — `f4_raio_min`, `f4_raio_mean`, `f4_dnit_num`, quando disponível para rotas conhecidas
+- F5: contexto histórico — `n_curvas_antes`, `prop_perigosas_antes`, `prev_raio_min`, `prev_raio_mean`, `prev_dnit_num`
 
-**Features de tendência** (2 × 4 = 8 features):
+Targets de curvatura:
 
-| Feature | Descrição |
-|---|---|
-| `{var}_slope` | Coeficiente angular da regressão linear sobre o tempo — indica se o motorista está acelerando (+) ou freando (−) ao se aproximar da curva |
-| `{var}_cv` | Coeficiente de variação (std/mean) — quão errático estava o comportamento |
+- `manobra_accel_curva`, `manobra_lateral_curva`, `manobra_ziguezague_curva`
+- `manobra_combinado_curva` = 1 se qualquer critério disparar dentro da curva
+- `manobra` é um alias de `manobra_combinado_curva`
 
-**Contexto do trajeto** (3 features):
-
-| Feature | Descrição |
-|---|---|
-| `n_curvas_antes` | Posição ordinal desta curva no trajeto |
-| `n_perigosas_antes` | Quantidade de curvas perigosas já realizadas antes desta |
-| `prop_perigosas_antes` | Proporção de curvas perigosas até o momento |
-
-> Estas features são válidas em tempo real: ao chegar na N-ésima curva, o histórico das N-1 anteriores já é conhecido.
-
-**Target (`manobra`):** proporção de pontos Perigosa dentro da curva ≥ 0.5 → evita sensibilidade à frequência de amostragem (o limiar `sum ≥ 2 pontos` era trivialmente atingido a 1 Hz).
-
-**Total de amostras:** 1.091 manobras — **545 Perigosa (50%) / 546 Segura (50%)**
+> Nota: o target é binário por curva (`any`), não uma proporção de pontos dentro da curva.
 
 ---
 
@@ -87,31 +87,31 @@ Para cada curva detectada, extrai features da janela de **10 s anteriores à ent
 ### Pipeline de treinamento (sem data leakage)
 
 ```
-Split estratificado (70/30)
+Split por rota base (treino/teste)
        ↓
 ImbPipeline: SMOTE → StandardScaler (→ PCA opcional) → Classificador
        ↓
-StratifiedKFold(5) sobre X_train bruto
-(SMOTE re-executado a cada fold — amostras sintéticas não cruzam para validação)
+GroupKFold(5) sobre X_train com grupos por rota base
        ↓
-Avaliação final no conjunto de teste
+Avaliação final no conjunto de teste reservado
 ```
 
-**Redução de dimensionalidade (PCA):** implementado no pipeline via `pca_n_components` em `config.yaml` — aceita número inteiro de componentes ou float 0–1 (variância explicada mínima). Fit exclusivamente sobre `X_train`; `X_test` apenas transformado. Atualmente desabilitado (`pca_n_components: null`) dado o volume moderado de features (34) em relação ao dataset (1.091 amostras).
+O split inicial é feito por rota base (`_split_por_rota`), garantindo que subtrajectos derivados do mesmo arquivo não apareçam simultaneamente no treino e no teste.
+No treinamento clássico, o `GroupKFold` é aplicado sobre `X_train` com os grupos correspondendo ao ID de rota original.
+O `SMOTE` é executado apenas no fold de treino dentro de cada validação cruzada, evitando vazamento de amostras sintéticas.
 
-### Resultados
+**Redução de dimensionalidade (PCA):** configurável via `pca_n_components` em `config.yaml`. Está desabilitada por padrão (`null`) no repositório atual.
 
-| Classificador | CV Acc | CV F1 | Acc (teste) | F1 (teste) |
-|---|---|---|---|---|
-| Regressão Logística | 0.646 | 0.645 | 0.613 | 0.611 |
-| SVM (linear) | 0.650 | 0.648 | 0.631 | 0.629 |
-| Árvore de Decisão | 0.592 | 0.592 | 0.558 | 0.556 |
-| **Floresta Aleatória** | **0.688** | **0.687** | **0.686** | **0.685** |
-| Rede Neural (MLP) | 0.603 | 0.602 | 0.610 | 0.608 |
+### Modelos disponíveis
 
-- Baseline aleatório: 50%
-- Melhor modelo: **Floresta Aleatória — 68.6% acurácia** sem overfitting (CV ≈ teste)
-- Também disponíveis: MLP Keras, GRU, LSTM
+- Regressão Logística
+- SVM linear
+- Árvore de Decisão
+- Floresta Aleatória
+- XGBoost
+- MLP sklearn
+
+O código também suporta tuning Optuna para XGBoost e RandomForest, além de `--mlp` e `--pytorch` para treinamentos específicos.
 
 ---
 

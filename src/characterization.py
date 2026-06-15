@@ -127,13 +127,13 @@ def caracterizar_conducao(
     Os rótulos são atribuídos apenas aos pontos do segmento; pontos fora de
     curvas recebem False/Segura.
 
-    Quando a coluna 'curva' não está disponível, cai no modo legado de janelas
+    Quando a coluna 'curva' não está disponível, cai em um fluxo legado de janelas
     fixas de janela_tempo segundos.
     """
     _cols = ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']
 
     if 'curva' not in df.columns:
-        # ── modo legado: janelas fixas ────────────────────────────────────────
+        # ── fluxo legado: janelas fixas ──────────────────────────────────────
         resultados = []
         t, fim, id_janela = df['time_sec'].min(), df['time_sec'].max(), 1
         while t + janela_tempo <= fim:
@@ -153,7 +153,7 @@ def caracterizar_conducao(
             t += janela_tempo
         return pd.concat(resultados, ignore_index=True) if resultados else pd.DataFrame()
 
-    # ── modo curva-ancorado ───────────────────────────────────────────────────
+    # ── fluxo curva-ancorado ─────────────────────────────────────────────────
     df_out = df.sort_values('time_sec').copy()
     for col in _cols:
         df_out[col] = False

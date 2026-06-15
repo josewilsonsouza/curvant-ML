@@ -45,7 +45,7 @@ _COLS_EXCLUIR = [
     'curve_abs_accel_max', 'curve_abs_accel_mean',
     # targets de velocidade (dentro ou derivados da curva)
     'v_excess', 'manobra_velocidade', 'v_safe_dnit', 'v_entry_ratio', 'v_critica',
-    # geometria bruta da curva atual (leakage; usar f4_* em Modo 1)
+    # geometria bruta da curva atual (leakage; usar f4_* quando disponível)
     'curve_raio_min', 'curve_raio_mean', 'curve_dnit_num',
 ]
 

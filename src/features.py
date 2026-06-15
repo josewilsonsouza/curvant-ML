@@ -39,7 +39,8 @@ def extrair_features(
     janela_acel_confort: float = 2.5,
     janela_distancia_min: float = 50.0,
     janela_distancia_max: float = 400.0,
-) -> pd.DataFrame:
+    vars_sensor: list | None = None,
+ ) -> pd.DataFrame:
     """
     Extrai features da janela pré-curva e targets de comportamento dentro da curva.
 
@@ -84,7 +85,19 @@ def extrair_features(
     df['conducao'] = df['conducao'].map({'Perigosa': 1, 'Segura': 0})
     df = df.sort_values(by=['id_route', 'time_sec'])
 
-    vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y']
+    # Determine vars_sensor: explicit arg -> config.yaml -> fallback default
+    if not vars_sensor:
+        try:
+            from utils.config import carregar_config
+
+            cfg = carregar_config()
+            cfg_vars = cfg.get('features', {}).get('vars_sensor') if isinstance(cfg, dict) else None
+            if cfg_vars and isinstance(cfg_vars, list) and len(cfg_vars) > 0:
+                vars_sensor = cfg_vars
+            else:
+                vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y']
+        except Exception:
+            vars_sensor = ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y']
 
     for (id_route_atual, trecho_curvo), curva in df.groupby(['id_route', 'trecho_curvo']):
         if len(curva) <= 2:
@@ -193,12 +206,6 @@ def extrair_features(
         # Raio de curvatura na janela pré-curva (F3).
         # A B-spline é ajustada ao trajeto inteiro: a curvatura aqui é influenciada pelos
         # pontos da curva à frente (via spline global + filtro Gaussiano).
-        #
-        # Modo 1 (rota conhecida): comportamento CORRETO — o trajeto completo está disponível
-        # antes da viagem, então usar a geometria futura é legítimo.
-        #
-        # Modo 2 (rota desconhecida): comportamento INCORRETO — pontos futuros não estariam
-        # disponíveis num dispositivo OBD em tempo real. Por isso pipeline.py zera F3 em Modo 2.
         if 'raio_curvatura' in janela.columns:
             raios_janela = janela['raio_curvatura'].replace(0, np.nan).dropna()
             if len(raios_janela) > 0:
@@ -320,8 +327,8 @@ def extrair_features(
         row['f4_dnit_num']  = row.get('curve_dnit_num', 0)
 
         # ISL estimado na entrada: usa raio real + velocidade de entrada
-        # isl = v²/(R × g × μ), μ=0.6 — mesmo cálculo do target isl_max
-        # Em Modo 2 f4_raio_min=0, então isl_entry=0 (sem informação geométrica)
+        # isl = v²/(R × g × μ), μ=0.6 — mesmo cálculo do target isl_max.
+        # Se o raio da curva não estiver disponível, o valor é definido como 0.
         _r = row.get('f4_raio_min', np.nan)
         if pd.notna(_r) and _r > 0:
             row['isl_entry_estimate'] = float((v_entry / 3.6) ** 2 / (_r * 9.81 * 0.6))

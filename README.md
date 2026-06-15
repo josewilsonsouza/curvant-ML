@@ -8,6 +8,32 @@ Framework de machine learning para prever condução de risco em curvas, momento
 pip install -e
 ```
 
+## Preparação dos dados
+
+O primeiro passo é gerar um arquivo parquet limpo para alimentar a pipeline.
+Use `scripts/preprocess_data.py` para aplicar as regras de limpeza configuradas em `config.yaml`:
+
+- filtrar acelerações muito altas (`accel_limite`, padrão 5.0 m/s²)
+- remover velocidades físicas impossíveis (`vel_max`, padrão 150 km/h)
+- consolidar paradas curtas (até `max_parados_consecutivos`, padrão 3 pontos)
+- cortar trajetos quando há gaps longos no sensor (`max_gap`, padrão 30 s)
+- descartar segmentos muito curtos (`min_pontos_segmento`, padrão 10)
+
+```bash
+python scripts/preprocess_data.py --input data/eletro_rjdf_serra_rjmgba_janeiro.parquet
+```
+
+O arquivo de saída padrão é o mesmo nome de entrada com sufixo `_clean.parquet`.
+
+## Cache de intermediários
+
+O pipeline principal (`scripts/run.py`) salva intermediários em cache na pasta `data/`:
+
+- `data/.cache_df_analysis.parquet` - resultado da detecção de curvas e caracterização de risco
+- `data/.cache_features_df.parquet` - features extraídas por curva
+
+Na execução normal, o script carrega esses caches quando eles existem e são mais recentes que o arquivo de dados de entrada. Use `--rebuild` recriar o cache.
+
 ## Como rodar
 
 ```bash
@@ -15,16 +41,16 @@ pip install -e
 python scripts/preprocess_data.py --input data/eletro_rjdf_serra_rjmgba_janeiro.parquet
 
 # 2. Pipeline completo
-python scripts/run.py                            # modelos clássicos (padrão), Modo 1
+python scripts/run.py                            # modelos clássicos (padrão)
 python scripts/run.py --classical                # modelos clássicos (explícito)
 python scripts/run.py --plot                     # + gráficos e matrizes de confusão
 python scripts/run.py --isl                      # + ISL 3 classes + regressão P1
 python scripts/run.py --optuna                   # + Optuna (XGBoost e RandomForest)
 python scripts/run.py --pytorch                  # + MLP multi-tarefa PyTorch
 python scripts/run.py --mlp                      # + MLP sklearn (GridSearchCV)
+python scripts/run.py --fi                       # + importância de features XGBoost
 python scripts/run.py --ts                       # + modelos de série temporal (dados brutos)
 python scripts/run.py --ts --rebuild             # força reprocessamento das etapas 1–5
-python scripts/run.py --modo modo2               # Modo 2: sem geometria da curva seguinte
 python scripts/run.py --isl --pytorch --ts --plot  # combinação completa
 ```
 
@@ -32,34 +58,38 @@ As etapas de pré-processamento (1–5) são cacheadas automaticamente em `data/
 
 ### O que são as features F4
 
-As features F4 descrevem a **geometria real da curva que o veículo está prestes a entrar** — raio mínimo, raio médio e classe DNIT — extraídas do traço GPS completo do trajeto. Elas representam informação que só existe quando a rota foi percorrida antes (navegação, frotas com rotas fixas, análise offline).
+As features F4 descrevem a **geometria real da curva que o veículo está prestes a entrar** - raio mínimo, raio médio e classe DNIT - extraídas do traço GPS completo do trajeto. Elas representam informação que só existe quando a rota foi percorrida antes (navegação, frotas com rotas fixas, análise offline).
 
-No **Modo 2**, essas três colunas são zeradas antes do treinamento e da inferência: o modelo opera apenas com o comportamento do motorista na abordagem (features F1–F3 e F5) e a geometria estimada localmente (F3), sem conhecer o raio da próxima curva.
+Atualmente, o código extrai essas features diretamente da curva detectada e não implementa alternância de modos de execução. A documentação antiga mencionava um fluxo em que F4 era zerado para simular rota desconhecida, mas essa lógica não está presente no fluxo principal atual.
 
-### Um modelo, dois contextos
-
-Um único modelo é treinado com os dados de ambos os modos, usando `modo_rota_conhecida` (1 = Modo 1, 0 = Modo 2) como feature explícita. Isso permite que o modelo:
-
-- **aprenda a explorar F4** quando a geometria está disponível (Modo 1), produzindo previsões mais precisas;
-- **recaia graciosamente** sobre as features de comportamento quando F4 = 0 (Modo 2), sem precisar de um modelo separado.
-
-O custo do Modo 2 é uma queda esperada no desempenho de classificação — o modelo passa a depender inteiramente de sinais como velocidade de entrada, jerk e histórico de curvas anteriores para antecipar o risco.
+As três colunas F4 são:
+  - `f4_raio_min`
+  - `f4_raio_mean`
+  - `f4_dnit_num`
 
 ## Métodos de caracterização de risco
 
+**Targets (Alvos)**
+- **Tipo por curva (binário)**: `manobra_accel_curva`, `manobra_lateral_curva`, `manobra_ziguezague_curva`, `manobra_combinado_curva` (alias `manobra`). Cada alvo é 1 se o critério disparar em qualquer ponto do trecho curvo, 0 caso contrário. Estes alvos são computados por segmento contíguo `curva=True`.
+- **ISL (física) - classificação 3 classes**: `isl_class` (baixo/medio/alto). Valores contínuos relacionados: `isl_value`, `isl_mean`, `isl_max` (usados como targets de regressão/diagnóstico, mas excluídos das features de treino para evitar leakage).
+- **Regressão de aceleração**: `curve_accel_y_max`, `curve_accel_y_mean`, `curve_abs_accel_max`, `curve_abs_accel_mean` - máximos e médias de acelerações dentro da curva (targets de regressão P1).
+- **Velocidade / risco cinemático**: `v_entry`, `v_pred_kinematica`, `v_entry_sq_over_raio_est`, `v_safe_dnit`, `v_entry_ratio` - usados como features e/ou targets dependentes do experimento (p. ex. excesso de velocidade na entrada).
+
+>Observação: todos os targets relacionados à curva são agregados por curva (não por ponto) e derivados dos pontos com `curva=True`. Colunas computadas dentro da curva (ex.: `isl_*`, `curve_*`) estão listadas em `_COLS_EXCLUIR` para evitar vazamento de informação ao treinar modelos que usem somente a janela pré-curva.
+
 ### Visão geral
 
-O pipeline classifica o comportamento do motorista aplicando três critérios independentes a cada **segmento contíguo de `curva=True`** detectado. Para cada segmento, os critérios são avaliados sobre uma janela que inclui os pontos do segmento mais uma aproximação de $\tau_{\text{apx}} = 5\ \text{s}$ imediatamente anteriores à entrada. O rótulo resultante é atribuído **apenas aos pontos do segmento** — pontos entre curvas recebem `Segura` por definição.
+O pipeline classifica o comportamento do motorista aplicando três critérios independentes a cada **segmento contíguo de `curva=True`** detectado. Para cada segmento, os critérios são avaliados sobre uma janela que inclui os pontos do segmento mais uma aproximação de $\tau_{\text{apx}} = 5\ \text{s}$ imediatamente anteriores à entrada. O rótulo resultante é atribuído **apenas aos pontos do segmento** e pontos entre curvas recebem `Segura` por definição.
 
-### Critério 1 — Limite de aderência (Círculo de Kamm)
+### Critério 1 - Limite de aderência (Círculo de Kamm)
 
 Detecta qualquer instante em que o vetor de aceleração total excede uma fração $\alpha$ do limite de aderência disponível, sem depender de GPS.
 
 $$C_{\text{accel}} = \max_{t \in W} \sqrt{a_x(t)^2 + a_y(t)^2} > \alpha \cdot \mu \cdot g$$
 
-onde $\mu = 0{,}6$ (atrito asfalto seco), $g = 9{,}81\ \text{m/s}^2$ e $\alpha = 0{,}7$ (margem de segurança), resultando num limiar de $\approx 4{,}12\ \text{m/s}^2$. A formulação decorre diretamente do **Círculo de Kamm**: a força total de atrito disponível é $\mu g$, compartilhada entre aceleração longitudinal ($a_x$) e lateral ($a_y$) — qualquer combinação que ultrapasse $\alpha \mu g$ indica operação próxima ao limite físico do pneu. O critério usa apenas `accel_x` e `accel_y` do OBD, sem geometria da curva.
+onde $\mu = 0{,}6$ (atrito asfalto seco), $g = 9{,}81\ \text{m/s}^2$ e $\alpha = 0{,}7$ (margem de segurança), resultando num limiar de $\approx 4{,}12\ \text{m/s}^2$. A formulação decorre diretamente do **Círculo de Kamm**: a força total de atrito disponível é $\mu g$, compartilhada entre aceleração longitudinal ($a_x$) e lateral ($a_y$) - qualquer combinação que ultrapasse $\alpha \mu g$ indica operação próxima ao limite físico do pneu. O critério usa apenas `accel_x` e `accel_y` do OBD, sem geometria da curva.
 
-### Critério 2 — Aceleração lateral excessiva
+### Critério 2 - Aceleração lateral excessiva
 
 Detecta força centrífuga anormal percebida pelo acelerômetro lateral, condicionada à severidade geométrica da curva segundo a classificação DNIT.
 
@@ -75,11 +105,11 @@ com $a_{y,\lim} = 2{,}0\ \text{m/s}^2$. A condição DNIT $\geq 2$ restringe o c
 | Fechada | $R \leq 100\ \text{m}$ | $D > 11{,}5°$ | 3 |
 | Média | $R \leq 200\ \text{m}$ | $D > 5{,}7°$ | 2 |
 | Aberta | $R \leq 500\ \text{m}$ | $D > 2{,}3°$ | 1 |
-| Suave | $R > 500\ \text{m}$ | — | 0 |
+| Suave | $R > 500\ \text{m}$ | - | 0 |
 
 O raio $R$ é estimado pela curvatura de Frenet via ajuste de B-spline com suavização gaussiana adaptativa ($\sigma \approx 20\ \text{m} / \overline{d}$, clipado em $[1, 8]$).
 
-### Critério 3 — Zigue-zague
+### Critério 3 - Zigue-zague
 
 Detecta oscilações laterais da trajetória combinando variação de direção (bearing GPS) com aceleração centrípeta, indicando instabilidade direcional ou desvios de faixa.
 
@@ -103,9 +133,9 @@ O rótulo da curva é então:
 
 $$y_{\text{curva}} = \begin{cases} \text{Risco} & \text{se } C_{\text{combinado}}(W_k) = \text{True} \\ \text{Segura} & \text{caso contrário} \end{cases}$$
 
-A avaliação é conservadora — basta um critério disparar na janela do segmento para classificar a curva como Risco. Isso é adequado para aplicações de segurança, onde falsos negativos (curvas perigosas classificadas como seguras) são mais custosos que falsos positivos.
+A avaliação é conservadora - basta um critério disparar na janela do segmento para classificar a curva como Risco. Isso é adequado para aplicações de segurança, onde falsos negativos (curvas perigosas classificadas como seguras) são mais custosos que falsos positivos.
 
-### ISL — Índice de Segurança Lateral
+### ISL - Índice de Segurança Lateral
 
 O ISL quantifica a proximidade ao limite de aderência lateral (Jessen et al., 2010):
 
@@ -121,14 +151,14 @@ onde $v$ é a velocidade (m/s), $R$ o raio de curvatura (m), $g = 9{,}81\ \text{
 
 O ISL é calculado nos pontos com `curva=True` dentro de cada curva detectada e excluído das features de entrada dos modelos para evitar leakage.
 
-### Sumário das caracterizações
+### Sumário das features
 
 | Coluna | Fonte | Tipo | Critério |
 |---|---|---|---|
 | `manobra_accel_curva` | OBD | Binário | $\max\sqrt{a_x^2+a_y^2} > \alpha\mu g \approx 4{,}1\ \text{m/s}^2$ em alguma janela |
 | `manobra_lateral_curva` | OBD + GPS | Binário | $\max|a_y| > 2{,}0\ \text{m/s}^2$ e DNIT $\geq$ média |
 | `manobra_ziguezague_curva` | GPS | Binário | $\geq 3$ eventos de bearing + accel centrípeta |
-| `manobra_combinado_curva` | — | Binário | OR dos três acima (target principal dos classificadores) |
+| `manobra_combinado_curva` | - | Binário | OR dos três acima (target principal dos classificadores) |
 | `isl_class` | OBD + GPS | 3 classes | ISL $= v^2/(R g \mu)$, classes baixo/médio/alto |
 | `isl_max` | OBD + GPS | Regressão | Valor máximo de ISL dentro da curva (contínuo) |
 | `v_excess` | OBD + GPS | Binário | $v_{\text{entry}} > v_{\text{safe}}(R) = \sqrt{Rg\mu}\cdot 3{,}6$ |
@@ -141,7 +171,7 @@ A análise de risco não usa partições temporais fixas. Para cada segmento con
 
 $$W_k = \left\{ t : t_k^{\text{início}} - \tau_{\text{apx}} \leq t < t_k^{\text{fim}} \right\}$$
 
-onde $t_k^{\text{início}}$ e $t_k^{\text{fim}}$ são os limites temporais do segmento $k$ e $\tau_{\text{apx}} = 5\ \text{s}$ é a janela de aproximação (configurável). Os rótulos resultantes são atribuídos **apenas aos pontos dentro do segmento** — pontos entre curvas recebem `Segura` por definição. Isso garante que os critérios são sempre avaliados em contexto geometricamente relevante e que nenhuma curva é dividida por um limite de janela arbitrário.
+onde $t_k^{\text{início}}$ e $t_k^{\text{fim}}$ são os limites temporais do segmento $k$ e $\tau_{\text{apx}} = 5\ \text{s}$ é a janela de aproximação (configurável). Os rótulos resultantes são atribuídos **apenas aos pontos dentro do segmento** - pontos entre curvas recebem `Segura` por definição. Isso garante que os critérios são sempre avaliados em contexto geometricamente relevante e que nenhuma curva é dividida por um limite de janela arbitrário.
 
 ### Janela pré-curva por distância de frenagem
 
@@ -149,7 +179,7 @@ As features são extraídas de uma janela espacial imediatamente anterior à ent
 
 $$d_{\text{janela}} = \text{clip}\!\left(\frac{\bar{v}^2}{2\,a_c},\ d_{\min},\ d_{\max}\right)$$
 
-com $a_c = 2{,}5\ \text{m/s}^2$ (desaceleração de conforto), $d_{\min} = 50\ \text{m}$ e $d_{\max} = 400\ \text{m}$. Todos os parâmetros são configuráveis em `config.yaml`. A formulação garante que a janela cresce com o quadrado da velocidade — à mesma taxa que a distância de frenagem real — capturando o contexto de decisão relevante independentemente da velocidade.
+com $a_c = 2{,}5\ \text{m/s}^2$ (desaceleração de conforto), $d_{\min} = 50\ \text{m}$ e $d_{\max} = 400\ \text{m}$. Todos os parâmetros são configuráveis em `config.yaml`.
 
 | $\bar{v}$ (km/h) | $d_{\text{janela}}$ (m) |
 |---|---|
@@ -172,67 +202,6 @@ $$n_{\text{lateral}} = \#\left\{t \in W : |a_y(t)| > a_{y,\lim}\right\}$$
 
 com os mesmos limiares dos Critérios 1 e 2. Esses contadores capturam a intensidade e frequência do comportamento de risco na aproximação à curva, complementando as estatísticas escalares de F1.
 
-## Pipeline
-
-```
-Dados brutos (OBD + GPS)
-    │
-    ▼
-preprocess_data.py       clip de acelerômetro, filtro de velocidade,
-                         thinning de paradas, divisão por gaps > 30 s
-    │
-    ▼
-Detecção de curvas       curvatura de Frenet (B-spline), classificação DNIT,
-                         colunas: curva, raio_curvatura, classe_dnit
-    │
-    ▼
-Análise de condução      por segmento de curva + 5 s de abordagem:
-  (characterization.py)    • manobra_accel   (Círculo de Kamm)
-                           • manobra_lateral  (accel_y gated por DNIT)
-                           • manobra_ziguezague (bearing alternado + accel centrípeta)
-                           • manobra_combinado (OR dos três acima)
-    │
-    ▼
-Extração de features     janela pré-curva dinâmica (d = v²/2aₒ):
-  (features.py)
-  F1 — Dinâmica          mean/std/median/max/min/slope/cv de
-                         vehicle_speed, engine_rpm, accel_x, accel_y
-                         + mean_tarde / slope_tarde (segunda metade da janela)
-  F2 — Entrada na curva  v_entry, v_speed_drop, jerk_x/y_max/std
-                         v_entry_sq_over_raio_est (proxy físico de ISL)
-  F3 — Geometria estimada janela_raio_min/mean/last (sem leakage)
-  F4 — Geometria real    f4_raio_min/mean, f4_dnit_num  ← Modo 1 apenas
-  F5 — Contexto histórico n_curvas_antes, prop_perigosas_antes,
-                         prev_raio_min/mean, prev_dnit_num
-  + n_perigo_accel/lateral_janela  (contagem direta dos sensores)
-  + modo_rota_conhecida  (1 = Modo 1, 0 = Modo 2)
-    │
-    ▼
-Avaliação honesta        split e cross-validation por id_route
-  (models.py)            GroupKFold(n_splits=5) — nenhuma rota aparece
-                         em dois folds
-    │
-    ▼
-Modelos
-  ├── Clássicos (padrão)   LogisticRegression, SVM, DecisionTree,
-  │                        RandomForest, XGBoost (+ Optuna via --optuna)
-  │
-  ├── --isl
-  │   ├── ISL 3 classes    target: isl_class (baixo/medio/alto)
-  │   └── P1 regressão     target: curve_accel_y_max / curve_abs_accel_max
-  │
-  ├── --pytorch            MultiTaskMLP (encoder 256->128 + 4 heads)
-  │   ├── head isl_class          3 classes  (CrossEntropyLoss)
-  │   ├── head manobra_accel_curva           (BCELoss)
-  │   ├── head manobra_lateral_curva         (BCELoss)
-  │   └── head manobra_zz_curva              (BCELoss)
-  │
-  └── --ts                 Série temporal (dados brutos da janela pré-curva)
-      ├── Neurais          GRU, LSTM, CNN1D, MLP
-      │                    n_timesteps=50 pontos reamostrados; alvo normalizado por rota
-      └── Clássicos        RF, XGBoost, linear (features estatísticas da janela)
-                           target e task configuráveis em config.yaml
-```
 
 ## Modelos e tuning
 
@@ -281,28 +250,6 @@ O split treino/teste é feito por rota base com estratificação pelo mediano do
 
 A ideia central é que todas as tarefas de previsão compartilham a mesma representação interna da curva. Um encoder aprende features úteis para todas as tarefas simultaneamente; cada head especializa essa representação para seu objetivo específico.
 
-**Arquitetura:**
-
-**Encoder compartilhado** — $\mathbf{x} \in \mathbb{R}^{n}$ (features F1–F5 padronizadas), $W_1 \in \mathbb{R}^{256 \times n}$, $W_2 \in \mathbb{R}^{128 \times 256}$:
-
-$$\mathbf{h} = \mathrm{Drop}_{0.3}\left(\mathrm{ReLU}(W_1\,\mathrm{BN}(\mathbf{x}))\right) \in \mathbb{R}^{256}$$
-
-$$\mathbf{z} = \mathrm{Drop}_{0.3}\left(\mathrm{ReLU}(W_2\,\mathbf{h})\right) \in \mathbb{R}^{128}$$
-
-**Heads independentes** — $W^{(1)} \in \mathbb{R}^{64 \times 128}$, $W^{(2)} \in \mathbb{R}^{d_{\mathrm{out}} \times 64}$:
-
-$$\hat{y}_{\text{isl\_class}} = W^{(2)}_{\text{isl}}\,\mathrm{ReLU}\left(W^{(1)}_{\text{isl}}\,\mathbf{z}\right) \in \mathbb{R}^{3}$$
-
-$$\hat{y}_{k} = \sigma\left(W^{(2)}_{k}\,\mathrm{ReLU}\left(W^{(1)}_{k}\,\mathbf{z}\right)\right) \in (0,1), \quad k \in \left\{\text{accel},\,\text{lateral},\,\text{zz}\right\}$$
-
-**Loss total:**
-
-$$L = \lambda_1\,\mathcal{L}_{\text{CE}}(\hat{y}_{\text{isl}},\,y_{\text{isl}}) + \lambda_2\,\mathcal{L}_{\text{BCE}}(\hat{y}_{\text{accel}},\,y_{\text{accel}}) + \lambda_3\,\mathcal{L}_{\text{BCE}}(\hat{y}_{\text{lateral}},\,y_{\text{lateral}}) + \lambda_4\,\mathcal{L}_{\text{BCE}}(\hat{y}_{\text{zz}},\,y_{\text{zz}})$$
-
-com $\lambda_i = 1{,}0$ para todas as tarefas (configurável via `lambdas`). Um único `backward()` por batch propaga o gradiente de todas as tarefas pelo encoder compartilhado.
-
-**Scheduler:** `ReduceLROnPlateau(patience=50, factor=0.5)` — reduz a LR à metade quando a loss não melhora por 50 épocas consecutivas. O patience longo evita reduções prematuras causadas por ruído de batch. Prever ISL e zigue-zague ao mesmo tempo força o encoder a aprender representações mais gerais, reduzindo overfitting. Tarefas correlacionadas (ex. ISL alto ↔ `manobra_accel`) reforçam mutuamente o gradiente do encoder. Uma única passagem retorna todas as estimativas de risco simultaneamente.
-
 Curva de loss salva automaticamente em `results/pytorch_loss_multitask_mlp.pdf`.
 
 ## Configuração (`config.yaml`)
@@ -310,7 +257,7 @@ Curva de loss salva automaticamente em `results/pytorch_loss_multitask_mlp.pdf`.
 | Parâmetro | Seção | Padrão | Descrição |
 |---|---|---|---|
 | `limite_raio` | `curve_detection` | `150` | Raio máximo (m) para marcar `curva=True` |
-| `kamm_alpha` | `driving_analysis` | `0.7` | Fração do limite de aderência — limiar $= \alpha\mu g \approx 4{,}12\ \text{m/s}^2$ |
+| `kamm_alpha` | `driving_analysis` | `0.7` | Fração do limite de aderência - limiar $= \alpha\mu g \approx 4{,}12\ \text{m/s}^2$ |
 | `janela_aproximacao` | `driving_analysis` | `5` | Segundos de abordagem incluídos na avaliação de cada curva |
 | `limiar_accel_lateral` | `driving_analysis` | `2.0` | \|accel_y\|_max mínimo para `manobra_lateral` (m/s²) |
 | `janela_tempo` | `features` | `15` | Fallback temporal da janela pré-curva (s), usado se `distancia_acumulada` ausente |
@@ -325,9 +272,9 @@ Curva de loss salva automaticamente em `results/pytorch_loss_multitask_mlp.pdf`.
 | `n_trials_xgb` | `optuna` | `50` | Trials Optuna para XGBoost |
 | `n_trials_rf` | `optuna` | `30` | Trials Optuna para RandomForest |
 | `timeout` | `optuna` | `300` | Tempo máximo por otimização (s) |
-| `model` | `time_series_regression` | `[rf, xgboost, linear]` | Modelos a treinar — lista ou string: `gru`, `lstm`, `cnn1d`, `mlp`, `linear`, `rf`, `xgboost` |
+| `model` | `time_series_regression` | `[rf, xgboost, linear]` | Modelos a treinar - lista ou string: `gru`, `lstm`, `cnn1d`, `mlp`, `linear`, `rf`, `xgboost` |
 | `task` | `time_series_regression` | `auto` | `auto` (detecta pelo target), `regression` ou `classification` |
-| `target` | `time_series_regression` | `isl_mean` | Variável alvo — regressão: `isl_mean`, `isl_max`, `curve_accel_y_max`, `curve_accel_y_mean`, `curve_abs_accel_max`; classificação: `manobra_combinado_curva`, `isl_class`, etc. |
+| `target` | `time_series_regression` | `isl_mean` | Variável alvo - regressão: `isl_mean`, `isl_max`, `curve_accel_y_max`, `curve_accel_y_mean`, `curve_abs_accel_max`; classificação: `manobra_combinado_curva`, `isl_class`, etc. |
 | `sensors` | `time_series_regression` | `[vehicle_speed, accel_x, accel_y, engine_rpm, raio_curvatura]` | Canais temporais da janela pré-curva (cada coluna vira uma dimensão da sequência) |
 | `scalares_extras` | `time_series_regression` | `[f3_janela_raio_min, f3_janela_raio_mean]` | Colunas de `features_df` adicionadas como canais constantes ao longo da sequência |
 | `target_cap_percentil` | `time_series_regression` | `99` | Remove amostras com target acima desse percentil antes de treinar (`null` = sem filtro) |
@@ -347,6 +294,6 @@ Dataset público no HuggingFace: [`jwsouza13/routes_ML_inmetro`](https://hugging
 | ELETRONUCLEAR | Spin / Van | Rio de Janeiro | `eletronuclear` |
 | RJ-DF | Nivus | Rio de Janeiro -> Brasília | `rjdf` |
 | SERRA | Jetta | Trecho serrano | `serra` |
-| RJMGBA / JANEIRO | — | Rotas adicionais | `rjmgba`, `janeiro` |
+| RJMGBA / JANEIRO | - | Rotas adicionais | `rjmgba`, `janeiro` |
 
-**Features universais:** apenas sensores presentes em todos os datasets — `vehicle_speed`, `engine_rpm`, `accel_x`, `accel_y`, `lat`, `lon`. Sensores ausentes no Eletronuclear (throttle, rotation_rate, fuel_rate) e `accel_z` (aceleração vertical — ruído de suspensão, sem relação com risco em curva horizontal) são excluídos.
+**Features universais:** apenas sensores presentes em todos os datasets - `vehicle_speed`, `engine_rpm`, `accel_x`, `accel_y`, `lat`, `lon`. Sensores ausentes no Eletronuclear (throttle, rotation_rate, fuel_rate) e `accel_z` (aceleração vertical - ruído de suspensão, sem relação com risco em curva horizontal) são excluídos.

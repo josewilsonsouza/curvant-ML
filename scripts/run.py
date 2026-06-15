@@ -2,7 +2,7 @@
 CurvantML — Pipeline de Experimentos
 
 Uso:
-    python scripts/run.py                            # modelos clássicos (modo1)
+    python scripts/run.py                            # modelos clássicos
     python scripts/run.py --classical                # modelos clássicos (explícito)
     python scripts/run.py --classical --plot         # + matrizes de confusão
     python scripts/run.py --optuna                   # Optuna (XGBoost e RandomForest)
@@ -10,8 +10,6 @@ Uso:
     python scripts/run.py --mlp                      # MLP sklearn (GridSearchCV)
     python scripts/run.py --pytorch                  # MLP multi-tarefa PyTorch
     python scripts/run.py --ts                       # regressão série temporal (GRU/LSTM/CNN1D/MLP)
-    python scripts/run.py --classical --pytorch --plot   # combinação explícita
-    python scripts/run.py --modo modo2               # Modo 2 (sem geometria da curva seguinte)
     python scripts/run.py --ts --rebuild             # força reprocessamento (ignora cache)
 """
 
@@ -36,7 +34,7 @@ _FLAGS_MODELO = ('classical', 'optuna', 'isl', 'mlp', 'pytorch', 'ts', 'fi')
 
 
 _CACHE_ANALYSIS  = 'data/.cache_df_analysis.parquet'
-_CACHE_FEATURES  = 'data/.cache_features_df_{modo}.parquet'
+_CACHE_FEATURES  = 'data/.cache_features_df.parquet'
 
 
 def _cache_valido(cache_path: str, data_path: str) -> bool:

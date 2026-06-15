@@ -15,15 +15,15 @@ dependencies = [
     "scikit-learn",
     "xgboost",
     "imbalanced-learn",
-    "tensorflow",
     "pyyaml",
     "pyarrow",
     "optuna>=3.0",
-    "torch>=2.0"
+    # heavy ML backends moved to optional-dependencies (see below)
 ]
 
 [project.optional-dependencies]
 dev = ["jupyter", "ipykernel", "nbformat"]
+ml-backends = ["torch>=2.0", "tensorflow"]
 
 [build-system]
 requires = ["setuptools>=61"]
