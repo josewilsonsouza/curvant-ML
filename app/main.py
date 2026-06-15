@@ -2,9 +2,14 @@
 CurvantML — Visualizador Interativo de Curvas
 Uso: streamlit run app/main.py
 """
+import sys
+import os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import io
 import contextlib
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import numpy as np
@@ -47,8 +52,8 @@ def carregar_pipeline():
     with contextlib.redirect_stdout(io.StringIO()):
         df_analysis = etapa_analise_conducao(dfs_curves, cfg, plot=False)
 
-    df_analysis[["aceleracao_anormal", "direcao_perigosa", "zigue_zague"]] = (
-        df_analysis[["aceleracao_anormal", "direcao_perigosa", "zigue_zague"]].astype(int)
+    df_analysis[["manobra_accel", "manobra_lateral", "manobra_ziguezague"]] = (
+        df_analysis[["manobra_accel", "manobra_lateral", "manobra_ziguezague"]].astype(int)
     )
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -195,9 +200,9 @@ c7.metric("Duração da curva", f"{dur_curva:.0f}s")
 st.markdown("**Critérios ativos durante a curva:**")
 ca, cb, cc_ = st.columns(3)
 for col, flag_col, nome in [
-    (ca, "manobra_accel_perigo", "Aceleração anormal"),
-    (cb, "manobra_dir_perigosa", "Direção perigosa (desabilitado)"),
-    (cc_, "manobra_zigue_zague", "Zigue-zague"),
+    (ca, "manobra_accel_curva", "Aceleração anormal"),
+    (cb, "manobra_lateral_curva", "Direção perigosa"),
+    (cc_, "manobra_ziguezague_curva", "Zigue-zague"),
 ]:
     ativo = bool(feat_row[flag_col])
     icone = "🔴" if ativo else "⚪"
