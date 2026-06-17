@@ -39,6 +39,7 @@ def extrair_features(
     janela_acel_confort: float = 2.5,
     janela_distancia_min: float = 50.0,
     janela_distancia_max: float = 400.0,
+    lead_gap: float = 0.0,
     vars_sensor: list | None = None,
  ) -> pd.DataFrame:
     """
@@ -105,16 +106,19 @@ def extrair_features(
 
         # ── Janela pré-curva ─────────────────────────────────────────────────
         dist_entrada = curva['distancia_acumulada'].min()
+        # Ponto de decisão recuado da entrada por lead_gap (predição antecipada):
+        # nenhuma informação em/após dist_decisao pode entrar nas features.
+        dist_decisao = dist_entrada - lead_gap
 
         if janela_distancia is not None:
             # distância fixa explícita
             d_janela = float(janela_distancia)
         else:
             # distância dinâmica: d = v² / (2 * a_confort), baseada na
-            # velocidade média dos últimos pontos antes da curva
+            # velocidade média dos últimos pontos antes do ponto de decisão
             pontos_antes = df[
                 (df['id_route'] == id_route_atual)
-                & (df['distancia_acumulada'] < dist_entrada)
+                & (df['distancia_acumulada'] < dist_decisao)
             ].tail(5)
             v_ms = (
                 float(pontos_antes['vehicle_speed'].mean()) / 3.6
@@ -128,8 +132,8 @@ def extrair_features(
 
         janela = df[
             (df['id_route'] == id_route_atual)
-            & (df['distancia_acumulada'] < dist_entrada)
-            & (df['distancia_acumulada'] >= dist_entrada - d_janela)
+            & (df['distancia_acumulada'] < dist_decisao)
+            & (df['distancia_acumulada'] >= dist_decisao - d_janela)
         ].copy()
 
         # Melhoria #2 — remove pontos pertencentes a uma curva anterior

@@ -143,7 +143,7 @@ def caracterizar_conducao(
                 comb = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
                 janela = janela.copy()
                 for k in _cols[:3]:
-                    janela[k] = r[k.replace('manobra_', 'manobra_')]
+                    janela[k] = r[k]
                 janela['manobra_combinado'] = comb
                 janela['conducao']  = 'Perigosa' if comb else 'Segura'
                 janela['risco_dnit'] = r['risco_dnit']
@@ -153,7 +153,7 @@ def caracterizar_conducao(
             t += janela_tempo
         return pd.concat(resultados, ignore_index=True) if resultados else pd.DataFrame()
 
-    # ── fluxo curva-ancorado ─────────────────────────────────────────────────
+    # fluxo curva-ancorado
     df_out = df.sort_values('time_sec').copy()
     for col in _cols:
         df_out[col] = False
@@ -201,11 +201,10 @@ def caracterizar_todos_trajetos(
     **kwargs,
 ) -> pd.DataFrame:
     """Aplica caracterizar_conducao em cada trajeto e concatena."""
-    return pd.concat([
-        caracterizar_conducao(
-            dfs_curves.query(f'id_route == "{traj}"'),
-            janela_tempo=janela_tempo,
-            **kwargs,
-        )
-        for traj in dfs_curves['id_route'].unique()
-    ], ignore_index=True)
+    # groupby em vez de query(f'... == "{traj}"'): robusto a caracteres especiais
+    # no id_route e mais rápido (não reescaneia o DataFrame a cada trajeto).
+    partes = [
+        caracterizar_conducao(grupo, janela_tempo=janela_tempo, **kwargs)
+        for _, grupo in dfs_curves.groupby('id_route', sort=False)
+    ]
+    return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()

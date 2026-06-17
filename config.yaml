@@ -25,7 +25,11 @@ preprocessing:
 #  Etapa 2: detecção de curvas
 # Aplicado sempre. Produz: curva, raio_curvatura, curvatura, classe_dnit.
 curve_detection:
-  sigma: 2          # suavização gaussiana
+  sigma: 2          # suavização gaussiana sobre a curvatura
+  sigma_gps: 0.0    # 0 = spline interpoladora (padrão). >0 ativa a suavizadora (splprep, s=n·σ²).
+                    # REPROVADO na validação (scripts/validar_spline.py): remove os raios
+                    # impossíveis (<1%) mas reescreve ~20% dos rótulos curva/não-curva e a
+                    # correlação do bulk cai a ~0.6. Sem ground truth, não é troca segura.
   limite_raio: 150   # metros - raio máximo para marcar curva=True
   raio_min: 5.0      # metros - clip antes de ctp_accel; evita ISL -> ∞ por ruído GPS
   # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010)
@@ -58,6 +62,8 @@ features:
   janela_acel_confort: 2.5  # m/s² - desaceleração de conforto para cálculo dinâmico
   janela_distancia_min: 10  # m - distância mínima da janela dinâmica
   janela_distancia_max: 200 # m - distância máxima da janela dinâmica
+  lead_gap: 30              # m - folga antes da entrada da curva (predição antecipada);
+                            # a janela pré-curva termina em (entrada - lead_gap). 0 = sem folga.
   vars_sensor:
     - vehicle_speed
 #    - engine_rpm
@@ -142,15 +148,14 @@ time_series_regression:
     - janela_raio_min           # F3 - raio mínimo na janela pré-curva
     - janela_raio_mean          # F3 - raio médio na janela pré-curva
     - janela_raio_last          # F3 - raio no último ponto da janela
-    - v_entry                   # F2 - velocidade no limiar da curva
-    - v_entry_sq_over_raio_est  # F2 - proxy de ISL antes da curva
+    # v_entry / v_entry_sq_over_raio_est / isl_entry_estimate removidos:
+    # medidos na entrada da curva (boundary) → leakage sob predição antecipada.
     - jerk_y_max                # F2 - pico de jerk lateral
     - n_perigo_accel_janela     # F2 - nº eventos acima do Círculo de Kamm
     - n_perigo_lateral_janela   # F2 - nº eventos accel_y > limiar
     - f4_raio_min               # F4 - raio mínimo real da curva
     - f4_raio_mean              # F4 - raio médio real da curva
     - f4_dnit_num               # F4 - classe DNIT numérica
-    - isl_entry_estimate        # F4 - ISL físico na entrada: v²/(f4_raio_min×g×μ)
     - mc_p_baixo               # MC - P(ISL < 0.5) simulado
     - mc_p_medio               # MC - P(0.5 ≤ ISL < 0.8) simulado
     - mc_p_alto                # MC - P(ISL ≥ 0.8) simulado

@@ -26,7 +26,7 @@ from src.pipeline import (
     etapa_curvas, etapa_analise_conducao, etapa_features,
     etapa_ml_classico, etapa_ml_otimizado, etapa_mlp_sklearn,
     etapa_isl_modelo, etapa_accel_regressao, etapa_regressao_ts,
-    etapa_importancia_features,
+    etapa_importancia_features, etapa_baseline_fisico,
 )
 from utils.config import carregar_config
 
@@ -113,6 +113,8 @@ def main(args: argparse.Namespace) -> None:
             etapa_ml_classico(features_df, cfg, args.plot)
 
     if args.isl:
+        print("\n[Baseline] Física pura (Monte Carlo / fórmula ISL)...")
+        etapa_baseline_fisico(features_df, cfg)
         print("\n[ML] ISL — classificação 3 classes (baixo/medio/alto)...")
         etapa_isl_modelo(features_df, cfg, args.plot)
         print("\n[ML] P1 — Regressão aceleração dentro da curva...")

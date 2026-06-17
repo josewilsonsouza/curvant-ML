@@ -19,12 +19,13 @@ def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Etapa 2: detecta curvas em cada trajeto e concatena."""
     sigma = cfg['curve_detection']['sigma']
     limite_raio = cfg['curve_detection']['limite_raio']
+    sigma_gps = cfg['curve_detection'].get('sigma_gps', 0.0)
 
     partes = []
     for traj in df['id_route'].unique():
         dt = df.query(f'id_route == "{traj}"')
         try:
-            partes.append(detectar_curvas(dt, sigma=sigma, limite_raio=limite_raio))
+            partes.append(detectar_curvas(dt, sigma=sigma, limite_raio=limite_raio, sigma_gps=sigma_gps))
         except Exception as e:
             print(f"  [AVISO] Erro ao processar {traj}: {e}")
 
@@ -90,6 +91,7 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         janela_acel_confort=ft.get('janela_acel_confort', 2.5),
         janela_distancia_min=ft.get('janela_distancia_min', 50.0),
         janela_distancia_max=ft.get('janela_distancia_max', 400.0),
+        lead_gap=ft.get('lead_gap', 0.0),
     )
 
     n_perigosa = features_df['manobra_combinado_curva'].sum()
@@ -246,6 +248,19 @@ def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Dat
     return resultados
 
 
+def etapa_baseline_fisico(features_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """Baseline físico (Monte Carlo / fórmula do ISL) avaliado no split por rota."""
+    from src.models import avaliar_baseline_fisico
+
+    ml = cfg['ml']
+    return avaliar_baseline_fisico(
+        features_df,
+        random_state=ml['random_state'],
+        test_size=ml['test_size'],
+        isl_max_cap_percentil=ml.get('isl_max_cap_percentil'),
+    )
+
+
 def etapa_regressao_ts(df_analysis: pd.DataFrame, features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
     """Regressão de série temporal (GRU / LSTM / CNN1D) sobre dados brutos da janela pré-curva."""
     from src.models_ts import treinar_regressao_ts
@@ -296,8 +311,7 @@ def etapa_importancia_features(features_df: pd.DataFrame, cfg: dict, top_n: int 
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from xgboost import XGBClassifier
-    from sklearn.preprocessing import StandardScaler
-    from src.models import _split_por_rota, _COLS_EXCLUIR
+    from src.models import _split_por_rota, colunas_features
 
     ml = cfg['ml']
     target = 'manobra_combinado_curva'
@@ -305,21 +319,19 @@ def etapa_importancia_features(features_df: pd.DataFrame, cfg: dict, top_n: int 
         print("  [fi] target não encontrado, pulando.")
         return
 
+    # X_train já vem alinhado a feature_cols (mesma ordem de exclusão de _COLS_EXCLUIR),
+    # com NaN de raio preenchidos pela mediana de treino — usar diretamente evita o
+    # desalinhamento X/y de re-escalar o dataset completo em ordem original.
+    # XGBoost é invariante a escala, então dispensamos o StandardScaler.
     X_train, _, y_train, _, _ = _split_por_rota(
         features_df, target=target,
         test_size=ml['test_size'], random_state=ml['random_state'],
     )
-    feature_cols = [c for c in features_df.columns if c not in _COLS_EXCLUIR]
-
-    scaler  = StandardScaler()
-    X_scaled = scaler.fit_transform(
-        features_df[feature_cols].fillna(0.0).values
-    )
-    X_tr = X_scaled[:X_train.shape[0]]
+    feature_cols = colunas_features(features_df)
 
     clf = XGBClassifier(n_estimators=200, random_state=ml['random_state'],
                         eval_metric='logloss')
-    clf.fit(X_tr, y_train)
+    clf.fit(X_train, y_train)
 
     importances = clf.feature_importances_
     indices     = importances.argsort()[::-1][:top_n]

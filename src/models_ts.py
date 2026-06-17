@@ -74,6 +74,32 @@ def _v_para_isl_class(v_kmh: np.ndarray, raios: np.ndarray) -> np.ndarray:
     return np.where(isl < 0.5, 0, np.where(isl < 0.8, 1, 2)).astype(int)
 
 
+def _baseline_persistencia_vcritica(y_test, raios_test, preditores: dict) -> None:
+    """
+    Baselines de persistência para v_critica (sem aprendizado), avaliados no MESMO
+    conjunto de teste e com o MESMO raio (f4_raio_min) dos modelos.
+
+    preditores: dict {nome: array_v_previsto_km_h}. Tipicamente:
+      - 'v_pred_kinematica'   : extrapolação cinemática com desaceleração de conforto
+      - 'vel_aprox_media'     : média da velocidade na janela pré-curva (persistência pura)
+
+    Quantifica quanto os modelos agregam além de "a velocidade na curva ≈ a de
+    aproximação". Dois baselines distinguem tarefa difícil de feature enviesada.
+    """
+    print(f"\n  [BASELINE persistência]  v_critica (sem treino)")
+    for nome, pred in preditores.items():
+        r2  = r2_score(y_test, pred)
+        mae = mean_absolute_error(y_test, pred)
+        linha = f"  {nome:22s}  R²: {r2:7.4f}  MAE: {mae:6.3f} km/h"
+        if raios_test is not None:
+            cls_pred = _v_para_isl_class(pred, raios_test)
+            cls_true = _v_para_isl_class(y_test, raios_test)
+            f1  = f1_score(cls_true, cls_pred, average='macro', zero_division=0)
+            acc = accuracy_score(cls_true, cls_pred)
+            linha += f"  | isl_class F1: {f1:.4f}  Acc: {acc:.4f}"
+        print(linha)
+
+
 def _detectar_task(target: str, task_cfg: str) -> tuple[str, int]:
     """Retorna (task, n_classes): task='regression'|'classification', n_classes=1|2|3."""
     if task_cfg == 'classification' or target in _TARGETS_CLASSIF_TS:
@@ -770,6 +796,19 @@ def treinar_regressao_ts(
     if target == 'v_critica' and 'f4_raio_min' in disponiveis:
         raio_idx   = n_seq_sensor + disponiveis.index('f4_raio_min')
         raios_test = X_test[:, 0, raio_idx].copy()   # valores originais, não normalizados
+
+    # Baselines de persistência: v_critica ≈ v_pred_kinematica e ≈ vel. média de
+    # aproximação (mesmo split/raio dos modelos). Extrair antes da normalização.
+    if target == 'v_critica':
+        preditores = {}
+        if 'v_pred_kinematica' in disponiveis:
+            vp_idx = n_seq_sensor + disponiveis.index('v_pred_kinematica')
+            preditores['v_pred_kinematica'] = X_test[:, 0, vp_idx].copy()
+        if 'vehicle_speed' in sensors:
+            vs_idx = sensors.index('vehicle_speed')
+            preditores['vel_aprox_media'] = X_test[:, :, vs_idx].mean(axis=1).copy()
+        if preditores:
+            _baseline_persistencia_vcritica(y_test, raios_test, preditores)
 
     # Normaliza sensores (fit apenas no treino) — compartilhado por todos os modelos
     for j in range(n_sensors):

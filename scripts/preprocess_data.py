@@ -27,12 +27,13 @@ def main(args: argparse.Namespace) -> None:
     cfg = carregar_config()
     pp = cfg.get('preprocessing', {})
 
-    accel_limite             = args.accel_limite             or pp.get('accel_limite',             5.0)
-    vel_max                  = args.vel_max                  or pp.get('vel_max',                  150.0)
-    vel_min_parado           = args.vel_min_parado           or pp.get('vel_min_parado',           2.0)
-    max_parados_consecutivos = args.max_parados_consecutivos or pp.get('max_parados_consecutivos', 3)
-    max_gap                  = args.max_gap                  or pp.get('max_gap',                  30.0)
-    min_pontos_segmento      = args.min_pontos_segmento      or pp.get('min_pontos_segmento',      10)
+    _arg = lambda v, key, default: v if v is not None else pp.get(key, default)
+    accel_limite             = _arg(args.accel_limite,             'accel_limite',             5.0)
+    vel_max                  = _arg(args.vel_max,                  'vel_max',                  150.0)
+    vel_min_parado           = _arg(args.vel_min_parado,           'vel_min_parado',           2.0)
+    max_parados_consecutivos = _arg(args.max_parados_consecutivos, 'max_parados_consecutivos', 3)
+    max_gap                  = _arg(args.max_gap,                  'max_gap',                  30.0)
+    min_pontos_segmento      = _arg(args.min_pontos_segmento,      'min_pontos_segmento',      10)
 
     in_path  = args.input  or _DEFAULT_INPUT
     out_path = args.output or _derive_output(in_path)

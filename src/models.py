@@ -20,7 +20,7 @@ from sklearn.metrics import (
     mean_absolute_error, mean_squared_error, r2_score,
 )
 from sklearn.model_selection import (
-    GroupKFold, GridSearchCV, KFold, StratifiedKFold,
+    GroupKFold, GridSearchCV, KFold, StratifiedGroupKFold, StratifiedKFold,
     cross_validate, train_test_split,
 )
 from sklearn.neural_network import MLPClassifier, MLPRegressor
@@ -30,24 +30,50 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn import svm
 from xgboost import XGBClassifier, XGBRegressor
 
-_COLS_EXCLUIR = [
+#
+# Cada coluna listada aqui recebe uma tag de proveniência explicando por que ela
+# não pode entrar na matriz de features. Uma coluna só vira feature se NÃO estiver
+# neste dicionário. Use colunas_features(df) para obter a lista de features.
+#
+# Tags:
+#   'id'       — identificadores / metadados temporais
+#   'target'   — alvos de predição (medidos dentro da curva)
+#   'in_curve' — geometria/medições brutas dentro da curva (leakage como feature)
+#   'boundary' — medido NA entrada da curva; sob predição antecipada (lead_gap > 0)
+#                isso está depois da fronteira de decisão -> leakage como feature
+_PROVENIENCIA: dict[str, str] = {
     # identificadores
-    'id_route', 'id_trecho_curvo', 'time_inicio', 'time_fim',
+    'id_route': 'id', 'id_trecho_curvo': 'id', 'time_inicio': 'id', 'time_fim': 'id',
     # targets de caracterização por curva
-    'manobra', 'manobra_combinado_curva',
-    'manobra_accel_curva', 'manobra_lateral_curva', 'manobra_ziguezague_curva',
-    # targets ISL — cinemático (v²/Rg μ) e baseado no sensor (|accel_y|/g μ)
-    # ambos calculados dentro da curva: leakage se usados como features
-    'isl_value', 'isl_mean', 'isl_max', 'isl_class', 'isl_alto',
-    'isl_sensor_max', 'isl_sensor_mean', 'isl_sensor_class',
+    'manobra': 'target', 'manobra_combinado_curva': 'target',
+    'manobra_accel_curva': 'target', 'manobra_lateral_curva': 'target',
+    'manobra_ziguezague_curva': 'target',
+    # targets ISL — cinemático (v²/Rgμ) e baseado no sensor (|accel_y|/gμ)
+    'isl_value': 'target', 'isl_mean': 'target', 'isl_max': 'target',
+    'isl_class': 'target', 'isl_alto': 'target',
+    'isl_sensor_max': 'target', 'isl_sensor_mean': 'target', 'isl_sensor_class': 'target',
     # targets de aceleração dentro da curva
-    'curve_accel_y_max', 'curve_accel_y_mean',
-    'curve_abs_accel_max', 'curve_abs_accel_mean',
+    'curve_accel_y_max': 'target', 'curve_accel_y_mean': 'target',
+    'curve_abs_accel_max': 'target', 'curve_abs_accel_mean': 'target',
     # targets de velocidade (dentro ou derivados da curva)
-    'v_excess', 'manobra_velocidade', 'v_safe_dnit', 'v_entry_ratio', 'v_critica',
-    # geometria bruta da curva atual (leakage; usar f4_* quando disponível)
-    'curve_raio_min', 'curve_raio_mean', 'curve_dnit_num',
-]
+    'v_excess': 'target', 'manobra_velocidade': 'target', 'v_safe_dnit': 'target',
+    'v_entry_ratio': 'target', 'v_critica': 'target',
+    # geometria bruta da curva atual (usar f4_* quando disponível)
+    'curve_raio_min': 'in_curve', 'curve_raio_mean': 'in_curve', 'curve_dnit_num': 'in_curve',
+    # fronteira da curva — medido na entrada (v_entry e derivados). Sob predição
+    # antecipada, estes ficam DEPOIS do ponto de decisão -> leakage.
+    'v_entry': 'boundary', 'v_speed_drop': 'boundary', 'v_speed_drop_pct': 'boundary',
+    'v_entry_vs_mean': 'boundary', 'v_entry_sq_over_raio_est': 'boundary',
+    'isl_entry_estimate': 'boundary',
+}
+
+# Alias retrocompatível: vários módulos importam _COLS_EXCLUIR.
+_COLS_EXCLUIR = list(_PROVENIENCIA)
+
+
+def colunas_features(df: pd.DataFrame) -> list[str]:
+    """Colunas de df que são features válidas (não estão no manifesto de proveniência)."""
+    return [c for c in df.columns if c not in _PROVENIENCIA]
 
 
 # ── Utilitários internos ──────────────────────────────────────────────────────
@@ -76,7 +102,7 @@ def _split_por_rota(
     train_base_set = set(train_base)
     test_base_set  = set(test_base)
 
-    feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
+    feature_cols = colunas_features(df)
     cols = feature_cols + [target, 'id_route']
 
     df_train = (
@@ -110,16 +136,60 @@ def _split_por_rota(
     return X_train, X_test, y_train, y_test, groups_train
 
 
+def _split_rota_generico(
+    df: pd.DataFrame,
+    feature_cols: list[str],
+    target: str,
+    test_size: float = 0.3,
+    random_state: int = 42,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Split por base-route com feature_cols explícito (não deriva de _COLS_EXCLUIR).
+
+    Usado por ISL e regressão, cujos alvos (ex.: _isl_y, curve_*) exigem
+    controle fino sobre quais colunas são features. Garante que nenhuma rota
+    apareça em treino e teste simultaneamente.
+
+    NaN em colunas de raio são preenchidos pela mediana de treino; demais NaN -> 0.
+    Retorna (X_train, X_test, y_train, y_test, groups_train).
+    """
+    id_routes  = df['id_route'].astype(str)
+    base_rotas = list({_base_route(r) for r in id_routes})
+    train_base, test_base = train_test_split(
+        base_rotas, test_size=test_size, random_state=random_state
+    )
+    base_map   = id_routes.map(_base_route)
+    df_train   = df[base_map.isin(set(train_base))].dropna(subset=[target])
+    df_test    = df[base_map.isin(set(test_base))].dropna(subset=[target])
+
+    raio_cols = [c for c in feature_cols if 'raio' in c]
+    medians   = df_train[raio_cols].median() if raio_cols else None
+
+    def _prep(d: pd.DataFrame) -> np.ndarray:
+        d = d[feature_cols].copy()
+        for col in raio_cols:
+            d[col] = d[col].fillna(medians[col])
+        return d.fillna(0.0).values
+
+    X_train = _prep(df_train)
+    X_test  = _prep(df_test)
+    y_train = df_train[target].values
+    y_test  = df_test[target].values
+    groups_train = np.array([_base_route(r) for r in df_train['id_route'].astype(str)])
+
+    return X_train, X_test, y_train, y_test, groups_train
+
+
 def _preparar_xy(df: pd.DataFrame, target: str = 'manobra') -> tuple[np.ndarray, np.ndarray]:
     """Extrai features e target como arrays numpy brutos (sem pré-processamento)."""
-    feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
+    feature_cols = colunas_features(df)
     df_clean = df[feature_cols + [target]].dropna()
     return df_clean[feature_cols].values, df_clean[target].values
 
 
 def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca_n_components=None):
     """
-    Constrói imblearn Pipeline: (SMOTE →) StandardScaler (→ PCA) → classificador.
+    Constrói imblearn Pipeline: (SMOTE ->) StandardScaler (-> PCA) -> classificador.
 
     ImbPipeline garante que o SMOTE é re-executado apenas no fold de treino
     durante cross_validate — amostras sintéticas nunca cruzam para o fold de
@@ -144,7 +214,7 @@ def _preproc_train_test(
     pca_n_components=None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Aplica SMOTE (opcional) → StandardScaler → PCA (opcional) corretamente:
+    Aplica SMOTE (opcional) -> StandardScaler -> PCA (opcional) corretamente:
       - SMOTE apenas em X_train / y_train
       - Scaler e PCA: fit em X_train, transform em X_test (sem vazar estatísticas do teste)
 
@@ -184,7 +254,7 @@ def aplicar_modelos_ml(
     Metodologia correta:
       1. Split estratificado nos dados BRUTOS (antes de SMOTE / scaler / PCA)
       2. StratifiedKFold sobre X_train bruto
-      3. Dentro de cada fold: SMOTE → Scaler (→ PCA) → fit  (via ImbPipeline)
+      3. Dentro de cada fold: SMOTE -> Scaler (-> PCA) -> fit  (via ImbPipeline)
          — amostras sintéticas nunca cruzam para o fold de validação
       4. Avaliação no teste com Acurácia, F1 weighted, Precisão, Recall
 
@@ -375,7 +445,7 @@ def preparar_dados_keras(
       1. Split treino / teste estratificado nos dados brutos
       2. Split treino / val estratificado nos dados brutos (antes do SMOTE)
       3. SMOTE apenas em X_train
-      4. Scaler fit em X_train → transform X_val e X_test
+      4. Scaler fit em X_train -> transform X_val e X_test
 
     Retorna (X_train, X_val, X_test, y_train_cat, y_val_cat, y_test_cat).
     """
@@ -434,7 +504,7 @@ def preparar_dados_gru(
 ) -> tuple:
     """
     Prepara dados 3D (samples, timesteps, features) para GRU.
-    Split estratificado → Scaler (→ PCA) apenas no treino (sem SMOTE — dados sequenciais).
+    Split estratificado -> Scaler (-> PCA) apenas no treino (sem SMOTE — dados sequenciais).
     Retorna (X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features).
     """
     from tensorflow.keras.utils import to_categorical
@@ -486,7 +556,7 @@ def preparar_dados_lstm(
 ) -> tuple:
     """
     Prepara dados 3D para LSTM. Idêntico ao GRU.
-    Split estratificado → Scaler (→ PCA) apenas no treino, sem SMOTE.
+    Split estratificado -> Scaler (-> PCA) apenas no treino, sem SMOTE.
     Retorna (X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features).
     """
     from tensorflow.keras.utils import to_categorical
@@ -517,8 +587,8 @@ def construir_lstm(janela_tempo: int, num_features: int):
     Constrói um modelo LSTM com Keras.
 
     Arquitetura:
-      LSTM(64, return_sequences=True) → Dropout(0.3)
-      LSTM(32)                        → Dropout(0.3)
+      LSTM(64, return_sequences=True) -> Dropout(0.3)
+      LSTM(32)                        -> Dropout(0.3)
       Dense(2, softmax)
     """
     from tensorflow.keras.models import Sequential
@@ -549,8 +619,8 @@ def _optuna_xgb(
 ) -> dict:
     """
     Tuna XGBoost com Optuna usando GroupKFold.
-    task='classify' → XGBClassifier + f1_weighted
-    task='regress'  → XGBRegressor  + r2
+    task='classify' -> XGBClassifier + f1_weighted
+    task='regress'  -> XGBRegressor  + r2
     """
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -593,8 +663,8 @@ def _optuna_rf(
 ) -> dict:
     """
     Tuna RandomForest com Optuna usando GroupKFold.
-    task='classify' → RandomForestClassifier + f1_weighted
-    task='regress'  → RandomForestRegressor  + r2
+    task='classify' -> RandomForestClassifier + f1_weighted
+    task='regress'  -> RandomForestRegressor  + r2
     """
     import optuna
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -795,16 +865,15 @@ def treinar_modelo_isl(
     label_str = ' | '.join(f'{_ISL_LABELS[k]}: {v}' for k, v in counts.items())
     print(f"  ISL — amostras válidas: {len(df_valid)}  ({label_str})")
 
-    feature_cols = [c for c in df_valid.columns if c not in _COLS_EXCLUIR_ISL and c != '_isl_y']
-    df_clean = df_valid[feature_cols + ['_isl_y']].dropna()
-    X = df_clean[feature_cols].values
-    y = df_clean['_isl_y'].values
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y,
+    feature_cols = [c for c in colunas_features(df_valid) if c != '_isl_y']
+    X_train, X_test, y_train, y_test, groups_train = _split_rota_generico(
+        df_valid, feature_cols, target='_isl_y',
+        test_size=test_size, random_state=random_state,
     )
 
-    cv = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    # StratifiedGroupKFold: respeita as fronteiras de gravação (sem leakage por rota)
+    # e mantém a proporção das 3 classes em cada fold.
+    cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
     modelos = {
         'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
@@ -826,7 +895,7 @@ def treinar_modelo_isl(
         pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components, use_smote=True)
 
         cv_res = cross_validate(
-            pipe, X_train, y_train, cv=cv,
+            pipe, X_train, y_train, cv=cv, groups=groups_train,
             scoring={'acc': 'accuracy', 'f1': 'f1_macro'},
         )
         cv_acc = cv_res['test_acc'].mean()
@@ -883,6 +952,84 @@ def treinar_modelo_isl(
     return df_res
 
 
+# ── Baseline físico (sem aprendizado) ─────────────────────────────────────────
+
+def avaliar_baseline_fisico(
+    df: pd.DataFrame,
+    random_state: int = 42,
+    test_size: float = 0.3,
+    isl_max_cap_percentil: int | None = 99,
+) -> pd.DataFrame:
+    """
+    Baseline físico (sem treino), avaliado em conjunto de teste por rota com os
+    mesmos parâmetros de split dos modelos ML, para quantificar quanto o ML agrega
+    além da física pura.
+
+    - isl_class : predição = argmax(mc_p_baixo, mc_p_medio, mc_p_alto)  [Monte Carlo]
+    - isl_max   : ISL_phys = (v_pred_kinematica/3.6)² / (f4_raio_min · g · μ)
+    """
+    _G, _MU = 9.81, 0.6
+    mc_cols = ['mc_p_baixo', 'mc_p_medio', 'mc_p_alto']
+
+    def _test_mask(d: pd.DataFrame) -> pd.Series:
+        base  = d['id_route'].astype(str).map(_base_route)
+        bases = list(set(base))
+        _, test_base = train_test_split(bases, test_size=test_size, random_state=random_state)
+        return base.isin(set(test_base))
+
+    linhas = []
+
+    # isl_class via argmax da simulação de Monte Carlo
+    if 'isl_class' in df.columns and all(c in df.columns for c in mc_cols):
+        d = df.dropna(subset=['isl_class', 'isl_max'] + mc_cols).copy()
+        if isl_max_cap_percentil is not None and len(d):
+            cap = float(np.percentile(d['isl_max'], isl_max_cap_percentil))
+            d = d[d['isl_max'] <= cap]
+        d = d[d[mc_cols].sum(axis=1) > 0]   # ignora linhas sem MC (raio ausente)
+        if len(d):
+            dt     = d[_test_mask(d)]
+            y_true = dt['isl_class'].map(_ISL_ENCODE).astype(int).values
+            y_pred = dt[mc_cols].values.argmax(axis=1)
+            acc = accuracy_score(y_true, y_pred)
+            f1  = f1_score(y_true, y_pred, average='macro', zero_division=0)
+            print(f"  [baseline físico] isl_class (argmax MC)  Acc: {acc:.3f}  F1-macro: {f1:.3f}  (n_teste={len(dt)})")
+            linhas.append({'Alvo': 'isl_class', 'Método': 'argmax(MC)',
+                           'Métrica 1': f'Acc={acc:.3f}', 'Métrica 2': f'F1m={f1:.3f}'})
+
+    # isl_max via fórmula física com velocidade prevista pela cinemática da janela
+    need = ['isl_max', 'v_pred_kinematica', 'f4_raio_min']
+    if all(c in df.columns for c in need):
+        d = df.dropna(subset=need).copy()
+        d = d[d['f4_raio_min'] > 0]
+        if isl_max_cap_percentil is not None and len(d):
+            cap = float(np.percentile(d['isl_max'], isl_max_cap_percentil))
+            d = d[d['isl_max'] <= cap]
+        if len(d):
+            dt       = d[_test_mask(d)]
+            isl_phys = (dt['v_pred_kinematica'].values / 3.6) ** 2 / (dt['f4_raio_min'].values * _G * _MU)
+            y_true   = dt['isl_max'].values
+            mae  = mean_absolute_error(y_true, isl_phys)
+            rmse = float(np.sqrt(mean_squared_error(y_true, isl_phys)))
+            r2   = r2_score(y_true, isl_phys)
+            print(f"  [baseline físico] isl_max (fórmula)  MAE: {mae:.3f}  RMSE: {rmse:.3f}  R²: {r2:.3f}  (n_teste={len(dt)})")
+            linhas.append({'Alvo': 'isl_max', 'Método': 'v_pred²/(R·g·μ)',
+                           'Métrica 1': f'MAE={mae:.3f}', 'Métrica 2': f'R²={r2:.3f}'})
+
+    df_res = pd.DataFrame(linhas)
+    if not df_res.empty:
+        os.makedirs('results', exist_ok=True)
+        df_res.to_latex(
+            'results/baseline_fisico.tex',
+            index=False,
+            caption='Baseline físico (sem aprendizado) — argmax da simulação de Monte Carlo '
+                    'para isl\\_class e fórmula do ISL para isl\\_max, avaliados no conjunto de '
+                    'teste por rota (mesmo split dos modelos ML).',
+            label='tab:baseline_fisico',
+            position='h',
+        )
+    return df_res
+
+
 # ── Regressão genérica ────────────────────────────────────────────────────────
 
 def treinar_regressao(
@@ -898,7 +1045,7 @@ def treinar_regressao(
     """
     Treina modelos de regressão para prever qualquer target contínuo.
 
-    Pipeline: StandardScaler (→ PCA) → regressor. Sem SMOTE.
+    Pipeline: StandardScaler (-> PCA) -> regressor. Sem SMOTE.
     Métricas: CV MAE, CV R² | MAE, RMSE, R² no teste.
 
     cap_percentil : remove amostras acima deste percentil do target (None = sem filtro).
@@ -918,16 +1065,14 @@ def treinar_regressao(
         f"  std={df_valid[target].std():.3f}"
     )
 
-    feature_cols = [c for c in df_valid.columns if c not in _COLS_EXCLUIR_ISL]
-    df_clean = df_valid[feature_cols + [target]].dropna()
-    X = df_clean[feature_cols].values
-    y = df_clean[target].values
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state,
+    feature_cols = [c for c in colunas_features(df_valid) if c != target]
+    X_train, X_test, y_train, y_test, groups_train = _split_rota_generico(
+        df_valid, feature_cols, target=target,
+        test_size=test_size, random_state=random_state,
     )
 
-    cv = KFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+    # GroupKFold: folds respeitam as fronteiras de gravação (sem leakage por rota)
+    cv = GroupKFold(n_splits=cv_folds)
 
     steps_base = [('scaler', StandardScaler())]
     if pca_n_components is not None:
@@ -948,7 +1093,7 @@ def treinar_regressao(
         pipe = Pipeline(steps_base + [('reg', reg)])
 
         cv_res = cross_validate(
-            pipe, X_train, y_train, cv=cv,
+            pipe, X_train, y_train, cv=cv, groups=groups_train,
             scoring={'mae': 'neg_mean_absolute_error', 'r2': 'r2'},
         )
         cv_mae = -cv_res['test_mae'].mean()
