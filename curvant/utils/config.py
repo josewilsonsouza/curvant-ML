@@ -1,19 +1,23 @@
+import yaml
 import pandas as pd
 
 
+def carregar_config() -> dict:
+    """Lê config.yaml da raiz do projeto."""
+    with open('config.yaml') as f:
+        return yaml.safe_load(f)
+
+
 def load_data(file_path: str) -> pd.DataFrame:
-    """
-    Carrega os dados do trajeto a partir de um arquivo CSV, Parquet ou Excel.
-    Supõe que seja um arquivo concatenado de todos os trajetos.
-    """
-    if file_path.endswith(".csv"):
+    """Carrega os dados do trajeto a partir de CSV, Parquet ou Excel."""
+    if file_path.endswith('.csv'):
         return pd.read_csv(file_path)
-    elif file_path.endswith(".parquet"):
+    elif file_path.endswith('.parquet'):
         return pd.read_parquet(file_path)
-    elif file_path.endswith(".xlsx"):
+    elif file_path.endswith('.xlsx'):
         return pd.read_excel(file_path)
     else:
-        raise ValueError("Formato de arquivo não suportado.")
+        raise ValueError('Formato de arquivo não suportado.')
 
 
 def contar_curvas(dfs_curves: pd.DataFrame) -> dict[str, int]:

@@ -24,7 +24,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
-from src.models import _COLS_EXCLUIR, _base_route
+from curvant.models.tabular import _COLS_EXCLUIR, _base_route
 
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
 _ISL_LABELS  = {0: 'baixo', 1: 'medio', 2: 'alto'}
@@ -104,6 +104,32 @@ _LAMBDAS_PADRAO = {
 }
 
 
+def plotar_loss_pytorch(historico: list, nome: str = 'multitask_mlp', outdir: str = 'results') -> None:
+    """
+    Plota a curva de loss por época do treino PyTorch.
+    historico: lista de floats, um valor de loss médio por época.
+    Salva em outdir/loss_<nome>.pdf
+    """
+    os.makedirs(outdir, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    ax.plot(range(1, len(historico) + 1), historico, color='steelblue', linewidth=1.5)
+    ax.set_title(f'Loss por Época — {nome}')
+    ax.set_xlabel('Época')
+    ax.set_ylabel('Loss médio (batch)')
+    ax.grid(True, alpha=0.4)
+    # Marca época de menor loss
+    min_epoch = int(np.argmin(historico)) + 1
+    min_val = min(historico)
+    ax.axvline(min_epoch, color='tomato', linestyle='--', linewidth=1,
+               label=f'Mín: época {min_epoch} ({min_val:.4f})')
+    ax.legend()
+    fig.tight_layout()
+    path = os.path.join(outdir, f'loss_{nome}.pdf')
+    plt.savefig(path, bbox_inches='tight')
+    plt.close()
+    print(f"  Loss curve salva em {path}")
+
+
 def treinar_multitask_mlp(
     df: pd.DataFrame,
     epochs: int = 100,
@@ -114,6 +140,7 @@ def treinar_multitask_mlp(
     test_size: float = 0.3,
     random_state: int = 42,
     lambdas: dict = None,
+    outdir: str = 'results',
 ) -> MultiTaskMLP:
     """
     Treina o MultiTaskMLP com split por id_route.
@@ -193,14 +220,13 @@ def treinar_multitask_mlp(
             lr_atual = optimizer.param_groups[0]['lr']
             print(f"    Época {epoch + 1}/{epochs} — Loss: {loss_medio:.4f}  LR: {lr_atual:.2e}")
 
-    from graphics.visualization import plotar_loss_pytorch
-    plotar_loss_pytorch(historico_loss, nome='multitask_mlp')
+    plotar_loss_pytorch(historico_loss, nome='multitarefa', outdir=outdir)
 
     model.eval()
     with torch.no_grad():
         preds_test = model(torch.FloatTensor(X_test))
 
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     print("\n  MultiTaskMLP — Métricas (teste, split por rota):")
     for key in target_cols_presentes:
         if key not in preds_test or key not in test_targets:
@@ -231,7 +257,7 @@ def treinar_multitask_mlp(
                 ax.set_title(f'PyTorch — isl_class  F1={f1_cls:.3f}')
                 fig.colorbar(im, ax=ax)
                 fig.tight_layout()
-                fig.savefig('results/pytorch_cm_isl_class.pdf', bbox_inches='tight')
+                fig.savefig(os.path.join(outdir, 'cm_isl_class.pdf'), bbox_inches='tight')
                 plt.close(fig)
 
         else:
@@ -251,7 +277,7 @@ def treinar_multitask_mlp(
             ax.set_title(f'PyTorch — {short}  F1={f1:.3f}')
             fig.colorbar(im, ax=ax)
             fig.tight_layout()
-            fig.savefig(f'results/pytorch_cm_{short}.pdf', bbox_inches='tight')
+            fig.savefig(os.path.join(outdir, f'cm_{short}.pdf'), bbox_inches='tight')
             plt.close(fig)
 
     return model

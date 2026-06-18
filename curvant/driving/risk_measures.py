@@ -1,14 +1,3 @@
-"""
-CurvantML — Taxonomia explícita de caracterizações de risco em curvas.
-
-Produz colunas separadas por critério de risco:
-  manobra_accel      — vetor de aceleração excede fração do limite de aderência (Kamm)
-  manobra_lateral    — accel_y excessiva em curva DNIT ≥ média
-  manobra_ziguezague — padrão de zigue-zague (bearing + accel centrípeta)
-  manobra_combinado  — OR dos três (retrocompat com 'conducao')
-  conducao           — alias de manobra_combinado ('Perigosa'/'Segura')
-"""
-
 import numpy as np
 import pandas as pd
 
@@ -133,7 +122,7 @@ def caracterizar_conducao(
     _cols = ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']
 
     if 'curva' not in df.columns:
-        # ── fluxo legado: janelas fixas ──────────────────────────────────────
+        # janelas fixas
         resultados = []
         t, fim, id_janela = df['time_sec'].min(), df['time_sec'].max(), 1
         while t + janela_tempo <= fim:

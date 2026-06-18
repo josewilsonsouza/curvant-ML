@@ -1,27 +1,3 @@
-"""
-ISL — Índice de Segurança Lateral
-
-Mede o quão próximo o veículo está do limite de aderência lateral ao percorrer
-uma curva, com base na aceleração centrípeta e no coeficiente de atrito.
-
-Fórmula:
-    ISL = v² / (R × g × μ) = ctp_accel / (g × μ)
-
-Onde:
-    ctp_accel = v² / R  (coluna calculada no pipeline antes desta etapa)
-    g = 9.81 m/s²
-    μ = coeficiente de atrito estático (padrão: 0.6 — asfalto seco)
-
-Interpretação:
-    ISL < 0.5            → baixo risco (ampla margem de segurança)
-    0.5 ≤ ISL < 0.8      → risco médio (atenção recomendada)
-    ISL ≥ 0.8            → alto risco (próximo ao limite de aderência)
-
-Referência:
-    Adaptado de: Meng & Qu (2012) — Entry Speed Estimation for Rural Highway Curves
-    e Cafiso et al. (2011) — Lateral Safety Index for road design.
-"""
-
 import numpy as np
 import pandas as pd
 
@@ -34,7 +10,6 @@ _LIMIARES: list[tuple[float, str]] = [
 ]
 
 _CLASS_MAP: dict[str, int] = {'baixo': 0, 'medio': 1, 'alto': 2}
-
 
 def classificar_isl(isl: float) -> str:
     """Retorna 'baixo', 'medio' ou 'alto' para um valor de ISL."""

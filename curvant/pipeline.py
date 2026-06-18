@@ -1,6 +1,8 @@
 """
 CurvantML — Etapas do pipeline de experimentos.
 Funções reutilizáveis por scripts CLI e pelo app Streamlit.
+
+Cada flag de alvo escreve seus resultados numa subpasta própria de results/.
 """
 
 import os
@@ -8,11 +10,17 @@ import os
 import numpy as np
 import pandas as pd
 
-from src.characterization import caracterizar_conducao
-from src.curve_detection import detectar_curvas, identificar_trechos_curvos
-from src.features import extrair_features
-from src.montecarlo import aplicar_mc_features
-from utils.data import contar_curvas
+from curvant.driving.risk_measures import caracterizar_conducao
+from curvant.driving.curve_detection import detectar_curvas, identificar_trechos_curvos
+from curvant.driving.features import extrair_features
+from curvant.models.montecarlo import aplicar_mc_features
+from curvant.utils.config import contar_curvas
+
+_DIR_RISCO       = 'results/risco'
+_DIR_ISL         = 'results/isl'
+_DIR_VELOCIDADE  = 'results/velocidade'
+_DIR_ACELERACAO  = 'results/aceleracao'
+_DIR_MULTITAREFA = 'results/multitarefa'
 
 
 def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
@@ -22,8 +30,7 @@ def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     sigma_gps = cfg['curve_detection'].get('sigma_gps', 0.0)
 
     partes = []
-    for traj in df['id_route'].unique():
-        dt = df.query(f'id_route == "{traj}"')
+    for traj, dt in df.groupby('id_route', sort=False):
         try:
             partes.append(detectar_curvas(dt, sigma=sigma, limite_raio=limite_raio, sigma_gps=sigma_gps))
         except Exception as e:
@@ -37,12 +44,11 @@ def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 
 def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
-    """Etapa 4: classifica janelas de 10s com a taxonomia explícita de risco."""
+    """Etapa 4: classifica janelas com a taxonomia explícita de risco."""
     da = cfg['driving_analysis']
 
     partes = []
-    for traj in dfs_curves['id_route'].unique():
-        dt = dfs_curves.query(f'id_route == "{traj}"')
+    for _, dt in dfs_curves.groupby('id_route', sort=False):
         resultado = caracterizar_conducao(
             dt,
             janela_tempo=da['janela_tempo'],
@@ -75,7 +81,6 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
     Assume que a rota é pré-conhecida (ex: frota com rotas fixas, navegação GPS)
     e que o trajeto completo (lat, lon) está disponível.
-    Features disponíveis: F1 + F2 + F3 + F4 + F5.
     """
     df_analysis = df_analysis.copy()
     for col in ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']:
@@ -98,26 +103,6 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
     print(f"  {len(features_df)} amostras — Risco: {n_perigosa} | Segura: {n_segura}")
 
-    crit_cols = {
-        'manobra_accel_curva':      'Aceleração anormal',
-        'manobra_lateral_curva':    'Aceleração lateral',
-        'manobra_ziguezague_curva': 'Zigue-zague',
-    }
-    tab = features_df.groupby('manobra_combinado_curva')[list(crit_cols.keys())].sum().rename(columns=crit_cols)
-    tab.index = tab.index.map({0: 'Segura', 1: 'Risco'})
-    tab.insert(0, 'Total curvas', features_df.groupby('manobra_combinado_curva').size().rename({0: 'Segura', 1: 'Risco'}))
-    tab.index.name = 'Classificação'
-    print(tab.to_string())
-    os.makedirs('results', exist_ok=True)
-    tab.to_latex(
-        'results/tab_result.tex',
-        index=True,
-        caption='Distribuição dos critérios de risco por curva — contagem de curvas Segura e Risco em que cada critério foi ativado.',
-        label='tab:criterios_risco',
-        position='h',
-        column_format='lcccc',
-    )
-
     mc_cfg = cfg.get('montecarlo', {})
     rnd    = cfg.get('ml', {}).get('random_state', 42)
     features_df = aplicar_mc_features(
@@ -131,32 +116,57 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return features_df
 
 
-def etapa_ml_classico(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
-    """Etapa 7: treina e avalia modelos clássicos com validação cruzada k-fold."""
-    from src.models import aplicar_modelos_ml
+def _tabela_criterios_risco(features_df: pd.DataFrame, outdir: str) -> None:
+    """Tabela da distribuição dos 3 critérios de risco por curva (alvo manobra)."""
+    crit_cols = {
+        'manobra_accel_curva':      'Aceleração anormal',
+        'manobra_lateral_curva':    'Aceleração lateral',
+        'manobra_ziguezague_curva': 'Zigue-zague',
+    }
+    tab = features_df.groupby('manobra_combinado_curva')[list(crit_cols.keys())].sum().rename(columns=crit_cols)
+    tab.index = tab.index.map({0: 'Segura', 1: 'Risco'})
+    tab.insert(0, 'Total curvas', features_df.groupby('manobra_combinado_curva').size().rename({0: 'Segura', 1: 'Risco'}))
+    tab.index.name = 'Classificação'
+    print(tab.to_string())
+    os.makedirs(outdir, exist_ok=True)
+    tab.to_latex(
+        os.path.join(outdir, 'criterios_risco.tex'),
+        index=True,
+        caption='Distribuição dos critérios de risco por curva — contagem de curvas Segura e Risco em que cada critério foi ativado.',
+        label='tab:criterios_risco',
+        position='h',
+        column_format='lcccc',
+    )
 
+
+def etapa_ml_classico(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
+    """Modelos clássicos para o alvo de risco (manobra), validação por rota."""
+    from curvant.models import aplicar_modelos_ml
+
+    _tabela_criterios_risco(features_df, _DIR_RISCO)
     ml = cfg['ml']
     pca = ml.get('pca_n_components')
     if pca is not None:
         print(f"  PCA ativado: n_components={pca}")
-    resultados = aplicar_modelos_ml(
+    return aplicar_modelos_ml(
         features_df,
         plot_cm=plot,
         random_state=ml['random_state'],
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
         pca_n_components=pca,
+        outdir=_DIR_RISCO,
     )
-    return resultados
 
 
 def etapa_ml_otimizado(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
-    """Treina modelos clássicos com Optuna (XGB + RF) e split por rota."""
-    from src.models import aplicar_modelos_ml_otimizados
+    """Modelos de risco com Optuna (XGB + RF) e split por rota."""
+    from curvant.models import aplicar_modelos_ml_otimizados
 
+    _tabela_criterios_risco(features_df, _DIR_RISCO)
     ml  = cfg['ml']
     opt = cfg.get('optuna', {})
-    resultados = aplicar_modelos_ml_otimizados(
+    return aplicar_modelos_ml_otimizados(
         features_df,
         plot_cm=plot,
         random_state=ml['random_state'],
@@ -166,77 +176,45 @@ def etapa_ml_otimizado(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.D
         n_trials_rf=opt.get('n_trials_rf', opt.get('n_trials', 30)),
         n_trials_lr=opt.get('n_trials_lr', 20),
         timeout=opt.get('timeout'),
+        outdir=_DIR_RISCO,
     )
-    return resultados
-
-
-def _etapa_regressao(features_df: pd.DataFrame, cfg: dict, plot: bool, target: str) -> pd.DataFrame:
-    """Etapa genérica de regressão para qualquer target contínuo."""
-    from src.models import treinar_regressao
-
-    ml = cfg['ml']
-    resultados = treinar_regressao(
-        features_df,
-        target=target,
-        plot=plot,
-        random_state=ml['random_state'],
-        test_size=ml['test_size'],
-        cv_folds=ml['cv_folds'],
-        pca_n_components=ml.get('pca_n_components'),
-        cap_percentil=ml.get('isl_max_cap_percentil'),
-    )
-    return resultados
 
 
 def etapa_accel_regressao(features_df, cfg, plot):
-    """P1 — Regressão de aceleração dentro da curva. Targets definidos em ml.regression_targets."""
-    targets = cfg['ml'].get('regression_targets', ['curve_accel_y_max', 'curve_abs_accel_max'])
+    """Regressão das acelerações dentro da curva. Targets em ml.regression_targets."""
+    from curvant.models import treinar_regressao
+
+    ml = cfg['ml']
+    targets = ml.get('regression_targets', ['curve_accel_y_max', 'curve_abs_accel_max'])
     resultados = []
     for target in targets:
         print(f"\n  Regressão — {target}")
-        resultados.append(_etapa_regressao(features_df, cfg, plot, target=target))
-    return resultados
-
-
-def etapa_manobra_velocidade(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
-    """P2 — Classificação por velocidade de entrada vs. velocidade segura para o raio."""
-    from src.models import aplicar_modelos_ml
-
-    df_v = features_df.dropna(subset=['manobra_velocidade']).copy()
-    df_v['manobra_velocidade'] = df_v['manobra_velocidade'].astype(int)
-
-    n_perigosa = df_v['manobra_velocidade'].sum()
-    n_segura   = (df_v['manobra_velocidade'] == 0).sum()
-    print(f"  v_entry label — Risco (v>v_safe): {n_perigosa} | Segura: {n_segura}")
-
-    ml = cfg['ml']
-    resultados = aplicar_modelos_ml(
-        df_v,
-        plot_cm=plot,
-        random_state=ml['random_state'],
-        test_size=ml['test_size'],
-        cv_folds=ml['cv_folds'],
-        pca_n_components=ml.get('pca_n_components'),
-        target='manobra_velocidade',
-        f1_average='macro',
-    )
+        resultados.append(treinar_regressao(
+            features_df,
+            target=target,
+            plot=plot,
+            random_state=ml['random_state'],
+            test_size=ml['test_size'],
+            cv_folds=ml['cv_folds'],
+            pca_n_components=ml.get('pca_n_components'),
+            cap_percentil=ml.get('isl_max_cap_percentil'),
+            outdir=_DIR_ACELERACAO,
+        ))
     return resultados
 
 
 def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
     """
-    Etapa ISL: treina modelos para classificar o Índice de Segurança Lateral
-    antes de o veículo entrar na curva.
-
+    Classifica o Índice de Segurança Lateral (ISL) antes de entrar na curva.
     Target: ``isl_class`` — 3 classes ordinais (baixo / medio / alto).
     """
-    from src.models import treinar_modelo_isl
-    from src.isl import resumo_isl
+    from curvant.models import treinar_modelo_isl
+    from curvant.driving.isl import resumo_isl
 
     resumo_isl(features_df.dropna(subset=['isl_max']))
 
     ml = cfg['ml']
-    resultados = treinar_modelo_isl(
+    return treinar_modelo_isl(
         features_df,
         plot_cm=plot,
         random_state=ml['random_state'],
@@ -244,13 +222,13 @@ def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.Dat
         cv_folds=ml['cv_folds'],
         pca_n_components=ml.get('pca_n_components'),
         isl_max_cap_percentil=ml.get('isl_max_cap_percentil'),
+        outdir=_DIR_ISL,
     )
-    return resultados
 
 
 def etapa_baseline_fisico(features_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """Baseline físico (Monte Carlo / fórmula do ISL) avaliado no split por rota."""
-    from src.models import avaliar_baseline_fisico
+    from curvant.models import avaliar_baseline_fisico
 
     ml = cfg['ml']
     return avaliar_baseline_fisico(
@@ -258,18 +236,19 @@ def etapa_baseline_fisico(features_df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         random_state=ml['random_state'],
         test_size=ml['test_size'],
         isl_max_cap_percentil=ml.get('isl_max_cap_percentil'),
+        outdir=_DIR_ISL,
     )
 
 
 def etapa_regressao_ts(df_analysis: pd.DataFrame, features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
-    """Regressão de série temporal (GRU / LSTM / CNN1D) sobre dados brutos da janela pré-curva."""
-    from src.models_ts import treinar_regressao_ts
-    treinar_regressao_ts(df_analysis, features_df, cfg, plot=plot)
+    """Previsão da velocidade crítica (e ISL derivado) sobre a série temporal pré-curva."""
+    from curvant.models import treinar_regressao_ts
+    treinar_regressao_ts(df_analysis, features_df, cfg, plot=plot, outdir=_DIR_VELOCIDADE)
 
 
 def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
     """Treina o MLP multi-tarefa PyTorch com split por id_route."""
-    from src.models_pytorch import treinar_multitask_mlp
+    from curvant.models import treinar_multitask_mlp
 
     nn_cfg = cfg.get('neural_networks', {})
     pt_cfg = nn_cfg.get('multitask_mlp', {})
@@ -283,54 +262,34 @@ def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
         weight_decay=pt_cfg.get('weight_decay', 0.01),
         test_size=cfg['ml']['test_size'],
         random_state=cfg['ml']['random_state'],
-    )
-
-
-def etapa_mlp_sklearn(features_df: pd.DataFrame, cfg: dict) -> None:
-    """MLP sklearn com GridSearchCV."""
-    from src.models import treinar_mlp_sklearn
-
-    ml     = cfg['ml']
-    sk_cfg = cfg.get('neural_networks', {}).get('mlp_sklearn', {})
-    treinar_mlp_sklearn(
-        features_df,
-        random_state=ml['random_state'],
-        test_size=ml['test_size'],
-        pca_n_components=ml.get('pca_n_components'),
-        hidden_layer_sizes=sk_cfg.get('hidden_layer_sizes'),
-        activation=sk_cfg.get('activation', 'relu'),
-        solver=sk_cfg.get('solver', 'adam'),
-        alpha=sk_cfg.get('alpha', 0.001),
-        max_iter=sk_cfg.get('max_iter', 2000),
+        outdir=_DIR_MULTITAREFA,
     )
 
 
 def etapa_importancia_features(features_df: pd.DataFrame, cfg: dict, top_n: int = 40) -> None:
-    """Treina XGBoost e plota importância de features (gain), salva em results/."""
+    """Treina XGBoost e plota a importância das features (gain) do alvo de risco."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     from xgboost import XGBClassifier
-    from src.models import _split_por_rota, colunas_features
+    from curvant.models import _split_por_rota, colunas_features
 
     ml = cfg['ml']
     target = 'manobra_combinado_curva'
     if target not in features_df.columns:
-        print("  [fi] target não encontrado, pulando.")
+        print("  [importancia] target não encontrado, pulando.")
         return
 
-    # X_train já vem alinhado a feature_cols (mesma ordem de exclusão de _COLS_EXCLUIR),
-    # com NaN de raio preenchidos pela mediana de treino — usar diretamente evita o
-    # desalinhamento X/y de re-escalar o dataset completo em ordem original.
-    # XGBoost é invariante a escala, então dispensamos o StandardScaler.
+    # X_train já vem alinhado a feature_cols, com NaN de raio preenchidos pela mediana
+    # de treino — usar diretamente evita o desalinhamento X/y de re-escalar o dataset
+    # completo. XGBoost é invariante a escala, então dispensamos o StandardScaler.
     X_train, _, y_train, _, _ = _split_por_rota(
         features_df, target=target,
         test_size=ml['test_size'], random_state=ml['random_state'],
     )
     feature_cols = colunas_features(features_df)
 
-    clf = XGBClassifier(n_estimators=200, random_state=ml['random_state'],
-                        eval_metric='logloss')
+    clf = XGBClassifier(n_estimators=200, random_state=ml['random_state'], eval_metric='logloss')
     clf.fit(X_train, y_train)
 
     importances = clf.feature_importances_
@@ -345,84 +304,12 @@ def etapa_importancia_features(features_df: pd.DataFrame, cfg: dict, top_n: int 
     ax.set_xlabel('Importância (gain)')
     ax.set_title(f'XGBoost — Top {top_n} features ({target})')
     fig.tight_layout()
-    os.makedirs('results', exist_ok=True)
-    fig.savefig('results/feature_importance_xgb.pdf', bbox_inches='tight')
+    os.makedirs(_DIR_RISCO, exist_ok=True)
+    caminho = os.path.join(_DIR_RISCO, 'importancia_features.pdf')
+    fig.savefig(caminho, bbox_inches='tight')
     plt.close(fig)
 
-    print(f"\n  Feature importance salva em results/feature_importance_xgb.pdf")
+    print(f"\n  Importância das features salva em {caminho}")
     print(f"  Top 10 features:")
     for i in range(min(10, len(top_feats))):
         print(f"    {i+1:2d}. {top_feats[i]:<40s} {top_vals[i]:.4f}")
-
-
-def etapa_keras(features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
-    """Treina MLP Keras, GRU e LSTM."""
-    from src.models import (
-        construir_gru, construir_lstm, construir_mlp_keras,
-        preparar_dados_gru, preparar_dados_keras, preparar_dados_lstm,
-    )
-    from graphics.visualization import plotar_curva_treinamento
-
-    nn = cfg['neural_networks']
-
-    from tensorflow.keras.callbacks import EarlyStopping
-
-    early_stop = EarlyStopping(
-        monitor='val_accuracy', patience=10,
-        restore_best_weights=True, verbose=0,
-    )
-
-    print("\n  MLP Keras...")
-    mlp_cfg = nn['mlp_keras']
-    X_train, X_val, X_test, y_train, y_val, y_test = preparar_dados_keras(
-        features_df, val_size=mlp_cfg['validation_split'],
-    )
-    modelo = construir_mlp_keras(X_train.shape[1])
-    history = modelo.fit(
-        X_train, y_train,
-        epochs=mlp_cfg['epochs'],
-        batch_size=mlp_cfg['batch_size'],
-        validation_data=(X_val, y_val),
-        callbacks=[early_stop],
-        verbose=0,
-    )
-    _, acc = modelo.evaluate(X_test, y_test, verbose=0)
-    print(f"  MLP Keras — Acurácia teste: {acc:.4f}")
-    if plot:
-        plotar_curva_treinamento(history)
-
-    print("\n  GRU...")
-    gru_cfg = nn['gru']
-    X_train, X_test, y_train, y_test, n_feat = preparar_dados_gru(
-        features_df, janela_tempo=gru_cfg['janela_tempo']
-    )
-    modelo = construir_gru(gru_cfg['janela_tempo'], n_feat)
-    history = modelo.fit(
-        X_train, y_train,
-        epochs=gru_cfg['epochs'],
-        batch_size=gru_cfg['batch_size'],
-        validation_split=gru_cfg['validation_split'],
-        verbose=0,
-    )
-    _, acc = modelo.evaluate(X_test, y_test, verbose=0)
-    print(f"  GRU — Acurácia teste: {acc:.4f}")
-    if plot:
-        plotar_curva_treinamento(history)
-
-    print("\n  LSTM...")
-    lstm_cfg = nn['lstm']
-    X_train, X_test, y_train, y_test, n_feat = preparar_dados_lstm(
-        features_df, janela_tempo=lstm_cfg['janela_tempo']
-    )
-    modelo = construir_lstm(lstm_cfg['janela_tempo'], n_feat)
-    history = modelo.fit(
-        X_train, y_train,
-        epochs=lstm_cfg['epochs'],
-        batch_size=lstm_cfg['batch_size'],
-        validation_split=lstm_cfg['validation_split'],
-        verbose=0,
-    )
-    _, acc = modelo.evaluate(X_test, y_test, verbose=0)
-    print(f"  LSTM — Acurácia teste: {acc:.4f}")
-    if plot:
-        plotar_curva_treinamento(history)

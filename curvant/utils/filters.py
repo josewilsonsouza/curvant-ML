@@ -1,30 +1,10 @@
-"""
-Filtros de suavização de coordenadas GPS (lat/lon ou Cartesianas x/y).
-
-Todos os filtros trabalham por trajeto separadamente — nenhuma contaminação
-entre rotas diferentes concatenadas no mesmo DataFrame.
-
-Uso rápido:
-    from src.gps_filters import aplicar_filtro
-
-    df_suave = aplicar_filtro(df, metodo='kalman', cols=['lat', 'lon'], R=1e-5, Q=1e-6)
-    df_suave = aplicar_filtro(df, metodo='savgol', window_length=11, polyorder=2)
-    df_suave = aplicar_filtro(df, metodo='mediana', janela=5)  # pré-filtro anti-teleport
-
-Recomendação de uso no pipeline:
-    1. filtrar_mediana  — remove teleports (saltos impossíveis de GPS)
-    2. filtrar_kalman   — suavização principal (usa dt temporal real)
-    OU
-    1. filtrar_savgol   — boa opção única: preserva bordas, remove ruído branco
-"""
-
 import numpy as np
 import pandas as pd
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 
 
-# ── Utilitário interno ────────────────────────────────────────────────────────
+# Utilitário interno
 
 def _por_trajeto(df: pd.DataFrame, fn, cols: list[str], **kwargs) -> pd.DataFrame:
     """Aplica fn coluna a coluna em cada trajeto separado."""
@@ -38,7 +18,7 @@ def _por_trajeto(df: pd.DataFrame, fn, cols: list[str], **kwargs) -> pd.DataFram
     return pd.concat(partes, ignore_index=True)
 
 
-# ── Filtros ───────────────────────────────────────────────────────────────────
+# Filtros
 
 def filtrar_mediana(
     df: pd.DataFrame,
@@ -46,7 +26,7 @@ def filtrar_mediana(
     janela: int = 5,
 ) -> pd.DataFrame:
     """
-    Mediana móvel — robusto a outliers e teleports (saltos impossíveis de GPS).
+    Mediana móvel - robusto a outliers e teleports (saltos impossíveis de GPS).
 
     Recomendado como pré-filtro antes de qualquer suavização contínua.
     Não distorce curvas nítidas, mas remove picos isolados.
@@ -66,14 +46,14 @@ def filtrar_savgol(
     polyorder: int = 2,
 ) -> pd.DataFrame:
     """
-    Savitzky-Golay — ajusta um polinômio local por janela deslizante.
+    Savitzky-Golay - ajusta um polinômio local por janela deslizante.
 
     Preserva melhor a forma das curvas (picos, bordas) do que médias móveis,
     porque o polinômio local acompanha a geometria real da trajetória.
     Boa opção única quando não há teleports.
 
     window_length : número de pontos na janela (deve ser ímpar, ≥ polyorder+1)
-    polyorder     : grau do polinômio — 2 ou 3 funciona bem para GPS
+    polyorder     : grau do polinômio - 2 ou 3 funciona bem para GPS
     """
     def _fn(arr):
         wl = min(window_length, len(arr))
@@ -92,12 +72,12 @@ def filtrar_gaussiano(
     sigma: float = 2.0,
 ) -> pd.DataFrame:
     """
-    Filtro Gaussiano — suavização contínua com pesos em forma de sino.
+    Filtro Gaussiano - suavização contínua com pesos em forma de sino.
 
     Mesmo filtro usado na curvatura dentro de curve_detection.py.
     Simples e eficaz para ruído branco; não é robusto a teleports.
 
-    sigma : desvio padrão em número de pontos — maior = mais suave
+    sigma : desvio padrão em número de pontos - maior = mais suave
     """
     return _por_trajeto(df, gaussian_filter1d, cols, sigma=sigma)
 
@@ -108,7 +88,7 @@ def filtrar_media_movel(
     janela: int = 5,
 ) -> pd.DataFrame:
     """
-    Média móvel — mais simples, mas atenua e atrasa curvas nítidas.
+    Média móvel - mais simples, mas atenua e atrasa curvas nítidas.
 
     Útil para visualização; não recomendado antes do cálculo de curvatura
     porque amortece os ângulos reais das curvas.
@@ -161,7 +141,7 @@ def filtrar_kalman(
 
 def _kalman_vel_constante(z: np.ndarray, times: np.ndarray, R: float, Q: float) -> np.ndarray:
     """
-    Filtro de Kalman 1D — modelo de velocidade constante com dt variável.
+    Filtro de Kalman 1D - modelo de velocidade constante com dt variável.
 
     Estado:  x = [posição, velocidade]
     Transição: F(dt) = [[1, dt], [0, 1]]
@@ -180,7 +160,7 @@ def _kalman_vel_constante(z: np.ndarray, times: np.ndarray, R: float, Q: float) 
         if dt <= 0:
             dt = 1.0
 
-        # ── Predict ──────────────────────────────────────────────────────────
+        # Predict
         F = np.array([[1.0, dt], [0.0, 1.0]])
         G = np.array([0.5 * dt**2, dt])       # como a aceleração afeta o estado
         Q_mat = Q * np.outer(G, G)
@@ -188,7 +168,7 @@ def _kalman_vel_constante(z: np.ndarray, times: np.ndarray, R: float, Q: float) 
         x = F @ x
         P = F @ P @ F.T + Q_mat
 
-        # ── Update ────────────────────────────────────────────────────────────
+        # Update
         S = float(H @ P @ H) + R              # inovação na variância (escalar)
         K = (P @ H) / S                       # ganho de Kalman (vetor 2D)
         innov = z[i] - float(H @ x)           # inovação (escalar)

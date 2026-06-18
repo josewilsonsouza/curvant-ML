@@ -9,3 +9,4 @@ plots-test.py
 *.parquet
 results/
 .env
+.venv/

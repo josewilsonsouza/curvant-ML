@@ -4,7 +4,7 @@ from scipy.interpolate import make_interp_spline, splprep, splev
 from scipy.ndimage import gaussian_filter1d, binary_opening
 
 
-# ── Derivadas da trajetória via spline ────────────────────────────────────────
+# Derivadas da trajetória via spline
 
 def _derivadas_spline(
     x: np.ndarray,
@@ -14,9 +14,9 @@ def _derivadas_spline(
     """
     Primeira e segunda derivadas de (x(u), y(u)) por spline cúbica.
 
-    sigma_gps == 0 → spline INTERPOLADORA (passa por todos os pontos; comportamento
-                     legado). Sofre overshoot entre pontos espaçados → raios espúrios.
-    sigma_gps  > 0 → spline SUAVIZADORA (splprep, s = n · sigma_gps²), parametrizada
+    sigma_gps == 0 -> spline INTERPOLADORA (passa por todos os pontos; comportamento
+                     legado). Sofre overshoot entre pontos espaçados -> raios espúrios.
+    sigma_gps  > 0 -> spline SUAVIZADORA (splprep, s = n · sigma_gps²), parametrizada
                      por comprimento de arco. Não força a interpolação, eliminando o
                      overshoot. sigma_gps ≈ ruído de posição do GPS (m), ~2 m aqui.
 
@@ -40,7 +40,7 @@ def _derivadas_spline(
                     d2 = np.array(splev(u, tck, der=2))
                     return d1[0], d1[1], d2[0], d2[1]
                 except Exception:
-                    pass  # degenerado → usa interpolador abaixo
+                    pass  # degenerado -> usa interpolador abaixo
 
     t  = np.arange(n)
     cs = make_interp_spline(t, np.c_[x, y], k=3)
@@ -49,7 +49,7 @@ def _derivadas_spline(
     return d1[:, 0], d1[:, 1], d2[:, 0], d2[:, 1]
 
 
-# ── Sigma adaptativo ──────────────────────────────────────────────────────────
+# Sigma adaptativo
 
 def _sigma_adaptativo(
     x: np.ndarray,
@@ -64,8 +64,8 @@ def _sigma_adaptativo(
     Lógica: para suavizar uma janela de target_metros, precisamos de
         sigma ≈ target_metros / espaçamento_mediano  (em número de pontos)
 
-    GPS denso  (d ≈ 2 m/ponto)  → sigma ≈ 10  → mais suavização
-    GPS esparso (d ≈ 20 m/ponto) → sigma ≈ 1   → menos suavização
+    GPS denso  (d ≈ 2 m/ponto)  -> sigma ≈ 10  -> mais suavização
+    GPS esparso (d ≈ 20 m/ponto) -> sigma ≈ 1   -> menos suavização
 
     Parâmetros
     ----------
@@ -122,8 +122,8 @@ def detectar_curvas(df,
                   Pode ser um número fixo (ex.: 2) ou a string 'auto'.
                   Com 'auto', o sigma é calculado por _sigma_adaptativo():
                   sigma ≈ 20m / espaçamento_mediano_entre_pontos, clipado em [1, 8].
-                  GPS denso (2 m/pt) → sigma ≈ 10 (mais suave);
-                  GPS esparso (20 m/pt) → sigma ≈ 1 (menos suave).
+                  GPS denso (2 m/pt) -> sigma ≈ 10 (mais suave);
+                  GPS esparso (20 m/pt) -> sigma ≈ 1 (menos suave).
     limite_raio : raio máximo (metros) para classificar um ponto como curva
     min_pontos  : mínimo de pontos consecutivos para considerar curva válida
                   (elimina picos isolados de ruído GPS)

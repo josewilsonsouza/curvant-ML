@@ -55,16 +55,10 @@ _PROVENIENCIA: dict[str, str] = {
     # targets de aceleração dentro da curva
     'curve_accel_y_max': 'target', 'curve_accel_y_mean': 'target',
     'curve_abs_accel_max': 'target', 'curve_abs_accel_mean': 'target',
-    # targets de velocidade (dentro ou derivados da curva)
-    'v_excess': 'target', 'manobra_velocidade': 'target', 'v_safe_dnit': 'target',
-    'v_entry_ratio': 'target', 'v_critica': 'target',
+    # target de velocidade (ponto de pico do ISL na curva)
+    'v_critica': 'target',
     # geometria bruta da curva atual (usar f4_* quando disponível)
     'curve_raio_min': 'in_curve', 'curve_raio_mean': 'in_curve', 'curve_dnit_num': 'in_curve',
-    # fronteira da curva — medido na entrada (v_entry e derivados). Sob predição
-    # antecipada, estes ficam DEPOIS do ponto de decisão -> leakage.
-    'v_entry': 'boundary', 'v_speed_drop': 'boundary', 'v_speed_drop_pct': 'boundary',
-    'v_entry_vs_mean': 'boundary', 'v_entry_sq_over_raio_est': 'boundary',
-    'isl_entry_estimate': 'boundary',
 }
 
 # Alias retrocompatível: vários módulos importam _COLS_EXCLUIR.
@@ -76,7 +70,7 @@ def colunas_features(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns if c not in _PROVENIENCIA]
 
 
-# ── Utilitários internos ──────────────────────────────────────────────────────
+# Utilitários internos 
 
 def _base_route(id_route: str) -> str:
     """Remove sufixo _p<N> gerado pelo splittar_por_gaps, retornando o ID original da gravação."""
@@ -236,7 +230,7 @@ def _preproc_train_test(
     return X_train, X_test, y_train
 
 
-# ── Modelos clássicos ─────────────────────────────────────────────────────────
+# Modelos clássicos
 
 def aplicar_modelos_ml(
     df: pd.DataFrame,
@@ -247,6 +241,7 @@ def aplicar_modelos_ml(
     pca_n_components=None,
     target: str = 'manobra',
     f1_average: str = 'weighted',
+    outdir: str = 'results',
 ) -> pd.DataFrame:
     """
     Treina e avalia modelos clássicos de ML.
@@ -314,8 +309,8 @@ def aplicar_modelos_ml(
             plt.title(nome)
             plt.ylabel('Real')
             plt.xlabel('Prevista')
-            os.makedirs('results', exist_ok=True)
-            plt.savefig(f'results/matriz_confusao_{nome}.pdf', bbox_inches='tight')
+            os.makedirs(outdir, exist_ok=True)
+            plt.savefig(os.path.join(outdir, f'cm_{nome}.pdf'), bbox_inches='tight')
             plt.close()
 
         linhas.append({
@@ -329,9 +324,9 @@ def aplicar_modelos_ml(
         })
 
     df_res = pd.DataFrame(linhas)
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     df_res.to_latex(
-        'results/ml_resultados.tex',
+        os.path.join(outdir, 'resultados.tex'),
         float_format='%.3f',
         index=False,
         caption='Resultados dos modelos clássicos de ML — validação cruzada por rota (GroupKFold) e conjunto de teste.',
@@ -342,270 +337,7 @@ def aplicar_modelos_ml(
     return df_res
 
 
-def treinar_mlp_sklearn(
-    df: pd.DataFrame,
-    random_state: int = 42,
-    test_size: float = 0.3,
-    pca_n_components=None,
-    hidden_layer_sizes=None,
-    activation: str = 'relu',
-    solver: str = 'adam',
-    alpha: float = 0.001,
-    max_iter: int = 2000,
-) -> MLPClassifier:
-    """
-    Treina MLPClassifier com GridSearchCV.
-    SMOTE, StandardScaler e PCA aplicados apenas no conjunto de treino.
-    GridSearchCV usa f1_weighted (mais adequado que accuracy para dados desbalanceados).
-    """
-    if hidden_layer_sizes is None:
-        hidden_layer_sizes = [(128, 64)]
-
-    X, y = _preparar_xy(df)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y,
-    )
-
-    X_train_pp, X_test_pp, y_train_pp = _preproc_train_test(
-        X_train, X_test, y_train,
-        use_smote=False, random_state=random_state, pca_n_components=pca_n_components,
-    )
-
-    # Normaliza hidden_layer_sizes: aceita listas de listas ou lista simples
-    if hidden_layer_sizes and not isinstance(hidden_layer_sizes[0], (list, tuple)):
-        hidden_layer_sizes = [hidden_layer_sizes]
-    param_grid = {
-        'hidden_layer_sizes': [tuple(h) for h in hidden_layer_sizes],
-        'activation': [activation],
-        'solver': [solver],
-        'alpha': [alpha],
-        'learning_rate': ['constant'],
-    }
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
-    grid = GridSearchCV(
-        MLPClassifier(max_iter=2000, random_state=random_state),
-        param_grid, cv=cv, scoring='f1_weighted', n_jobs=-1, return_train_score=True,
-    )
-    grid.fit(X_train_pp, y_train_pp)
-    best = grid.best_estimator_
-    print(f'  Melhores parâmetros: {grid.best_params_}')
-
-    y_pred    = best.predict(X_test_pp)
-    train_acc = best.score(X_train_pp, y_train_pp)
-    test_acc  = accuracy_score(y_test, y_pred)
-    test_f1   = f1_score(y_test, y_pred, average='weighted')
-    test_prec = precision_score(y_test, y_pred, average='weighted', zero_division=0)
-    test_rec  = recall_score(y_test, y_pred, average='weighted')
-
-    print(
-        f'  Treino Acc: {train_acc:.4f} | '
-        f'Teste Acc: {test_acc:.4f}  F1: {test_f1:.4f}  Prec: {test_prec:.4f}  Rec: {test_rec:.4f}'
-    )
-    if train_acc - test_acc > 0.1:
-        print('  Aviso: possível overfitting detectado.')
-
-    cm = confusion_matrix(y_test, y_pred)
-    plt.figure(figsize=(6, 4))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                xticklabels=['Segura', 'Risco'], yticklabels=['Segura', 'Risco'])
-    plt.title('Matriz de Confusão — MLP (sklearn)')
-    plt.ylabel('Real')
-    plt.xlabel('Prevista')
-    os.makedirs('results', exist_ok=True)
-    plt.savefig('results/matriz_confusao_MLP_sklearn.pdf', bbox_inches='tight')
-    plt.close()
-
-    plt.figure(figsize=(8, 5))
-    plt.plot(best.loss_curve_, color='blue', label='Perda no Treinamento')
-    plt.xlabel('Épocas')
-    plt.ylabel('Perda')
-    plt.title('Curva de Perda do MLP')
-    plt.legend()
-    plt.grid()
-    plt.savefig('results/curva_perda_MLP_sklearn.pdf', bbox_inches='tight')
-    plt.close()
-
-    return best
-
-
-# ── Redes Neurais (Keras) ─────────────────────────────────────────────────────
-
-def preparar_dados_keras(
-    df: pd.DataFrame,
-    target: str = 'manobra',
-    test_size: float = 0.3,
-    val_size: float = 0.2,
-    random_state: int = 42,
-    pca_n_components=None,
-) -> tuple:
-    """
-    Prepara dados para MLP Keras sem leakage de SMOTE na validação.
-
-    Ordem correta:
-      1. Split treino / teste estratificado nos dados brutos
-      2. Split treino / val estratificado nos dados brutos (antes do SMOTE)
-      3. SMOTE apenas em X_train
-      4. Scaler fit em X_train -> transform X_val e X_test
-
-    Retorna (X_train, X_val, X_test, y_train_cat, y_val_cat, y_test_cat).
-    """
-    from tensorflow.keras.utils import to_categorical
-
-    X, y = _preparar_xy(df, target=target)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y,
-    )
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_train, y_train, test_size=val_size, random_state=random_state, stratify=y_train,
-    )
-
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val   = scaler.transform(X_val)
-    X_test  = scaler.transform(X_test)
-
-    if pca_n_components is not None:
-        pca = PCA(n_components=pca_n_components, random_state=random_state)
-        X_train = pca.fit_transform(X_train)
-        X_val   = pca.transform(X_val)
-        X_test  = pca.transform(X_test)
-
-    return (
-        X_train, X_val, X_test,
-        to_categorical(y_train), to_categorical(y_val), to_categorical(y_test),
-    )
-
-
-def construir_mlp_keras(num_features: int):
-    """Constrói um MLP com Keras (3 camadas Dense + Dropout)."""
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import Dense, Dropout, Input
-
-    modelo = Sequential([
-        Input(shape=(num_features,)),
-        Dense(64, activation='relu'),
-        Dropout(0.3),
-        Dense(64, activation='relu'),
-        Dropout(0.3),
-        Dense(64, activation='relu'),
-        Dense(2, activation='softmax'),
-    ])
-    modelo.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    return modelo
-
-
-def preparar_dados_gru(
-    df: pd.DataFrame,
-    janela_tempo: int = 1,
-    target: str = 'manobra',
-    test_size: float = 0.3,
-    random_state: int = 42,
-    pca_n_components=None,
-) -> tuple:
-    """
-    Prepara dados 3D (samples, timesteps, features) para GRU.
-    Split estratificado -> Scaler (-> PCA) apenas no treino (sem SMOTE — dados sequenciais).
-    Retorna (X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features).
-    """
-    from tensorflow.keras.utils import to_categorical
-
-    X, y = _preparar_xy(df, target=target)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y,
-    )
-    X_train, X_test, y_train = _preproc_train_test(
-        X_train, X_test, y_train,
-        use_smote=False, random_state=random_state, pca_n_components=pca_n_components,
-    )
-
-    num_features = X_train.shape[1]
-    n_train = X_train.shape[0] // janela_tempo
-    n_test  = X_test.shape[0]  // janela_tempo
-
-    X_train_3d  = X_train[:n_train * janela_tempo].reshape(n_train, janela_tempo, num_features)
-    X_test_3d   = X_test[:n_test * janela_tempo].reshape(n_test, janela_tempo, num_features)
-    y_train_cat = to_categorical(y_train[:n_train])
-    y_test_cat  = to_categorical(y_test[:n_test])
-
-    return X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features
-
-
-def construir_gru(janela_tempo: int, num_features: int):
-    """Constrói um modelo GRU com Keras."""
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import GRU, Dense
-
-    modelo = Sequential([
-        GRU(3, input_shape=(janela_tempo, num_features), return_sequences=True),
-        GRU(2),
-        Dense(2, activation='softmax'),
-    ])
-    modelo.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    return modelo
-
-
-# ── LSTM ──────────────────────────────────────────────────────────────────────
-
-def preparar_dados_lstm(
-    df: pd.DataFrame,
-    janela_tempo: int = 1,
-    target: str = 'manobra',
-    test_size: float = 0.3,
-    random_state: int = 42,
-    pca_n_components=None,
-) -> tuple:
-    """
-    Prepara dados 3D para LSTM. Idêntico ao GRU.
-    Split estratificado -> Scaler (-> PCA) apenas no treino, sem SMOTE.
-    Retorna (X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features).
-    """
-    from tensorflow.keras.utils import to_categorical
-
-    X, y = _preparar_xy(df, target=target)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=random_state, stratify=y,
-    )
-    X_train, X_test, y_train = _preproc_train_test(
-        X_train, X_test, y_train,
-        use_smote=False, random_state=random_state, pca_n_components=pca_n_components,
-    )
-
-    num_features = X_train.shape[1]
-    n_train = X_train.shape[0] // janela_tempo
-    n_test  = X_test.shape[0]  // janela_tempo
-
-    X_train_3d  = X_train[:n_train * janela_tempo].reshape(n_train, janela_tempo, num_features)
-    X_test_3d   = X_test[:n_test * janela_tempo].reshape(n_test, janela_tempo, num_features)
-    y_train_cat = to_categorical(y_train[:n_train])
-    y_test_cat  = to_categorical(y_test[:n_test])
-
-    return X_train_3d, X_test_3d, y_train_cat, y_test_cat, num_features
-
-
-def construir_lstm(janela_tempo: int, num_features: int):
-    """
-    Constrói um modelo LSTM com Keras.
-
-    Arquitetura:
-      LSTM(64, return_sequences=True) -> Dropout(0.3)
-      LSTM(32)                        -> Dropout(0.3)
-      Dense(2, softmax)
-    """
-    from tensorflow.keras.models import Sequential
-    from tensorflow.keras.layers import LSTM, Dense, Dropout
-
-    modelo = Sequential([
-        LSTM(64, input_shape=(janela_tempo, num_features), return_sequences=True),
-        Dropout(0.3),
-        LSTM(32),
-        Dropout(0.3),
-        Dense(2, activation='softmax'),
-    ])
-    modelo.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
-    return modelo
-
-
-# ── Optuna — Tuning de XGBoost e RandomForest ────────────────────────────────
+# Optuna — Tuning de XGBoost e RandomForest
 
 def _optuna_xgb(
     X_train: np.ndarray,
@@ -733,6 +465,7 @@ def aplicar_modelos_ml_otimizados(
     timeout: int | None = None,
     target: str = 'manobra',
     f1_average: str = 'weighted',
+    outdir: str = 'results',
 ) -> pd.DataFrame:
     """
     Igual a aplicar_modelos_ml mas com Optuna para XGBoost e RandomForest.
@@ -803,8 +536,8 @@ def aplicar_modelos_ml_otimizados(
             plt.title(nome)
             plt.ylabel('Real')
             plt.xlabel('Prevista')
-            os.makedirs('results', exist_ok=True)
-            plt.savefig(f'results/matriz_confusao_{nome}_opt.pdf', bbox_inches='tight')
+            os.makedirs(outdir, exist_ok=True)
+            plt.savefig(os.path.join(outdir, f'cm_{nome}_otim.pdf'), bbox_inches='tight')
             plt.close()
 
         linhas.append({
@@ -813,9 +546,9 @@ def aplicar_modelos_ml_otimizados(
         })
 
     df_res = pd.DataFrame(linhas)
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     df_res.to_latex(
-        'results/ml_resultados_opt.tex',
+        os.path.join(outdir, 'resultados_otimizado.tex'),
         float_format='%.3f',
         index=False,
         caption='Resultados dos modelos com tuning Optuna (XGBoost e RandomForest) — validação cruzada por rota (GroupKFold) e conjunto de teste.',
@@ -826,7 +559,7 @@ def aplicar_modelos_ml_otimizados(
     return df_res
 
 
-# ── ISL — Índice de Segurança Lateral ────────────────────────────────────────
+# ISL - Índice de Segurança Lateral
 
 _COLS_EXCLUIR_ISL = _COLS_EXCLUIR  # isl_mean/max/class/alto já estão em _COLS_EXCLUIR
 
@@ -842,6 +575,7 @@ def treinar_modelo_isl(
     cv_folds: int = 5,
     pca_n_components=None,
     isl_max_cap_percentil: int | None = 99,
+    outdir: str = 'results',
 ) -> pd.DataFrame:
     """
     Treina modelos clássicos para prever a classe ISL (3 classes) antes da curva.
@@ -924,8 +658,8 @@ def treinar_modelo_isl(
             plt.title(f'ISL — {nome}')
             plt.ylabel('Real')
             plt.xlabel('Prevista')
-            os.makedirs('results', exist_ok=True)
-            plt.savefig(f'results/isl_cm_{nome}.pdf', bbox_inches='tight')
+            os.makedirs(outdir, exist_ok=True)
+            plt.savefig(os.path.join(outdir, f'cm_{nome}.pdf'), bbox_inches='tight')
             plt.close()
 
         linhas.append({
@@ -939,9 +673,9 @@ def treinar_modelo_isl(
         })
 
     df_res = pd.DataFrame(linhas)
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     df_res.to_latex(
-        'results/isl_resultados.tex',
+        os.path.join(outdir, 'resultados.tex'),
         float_format='%.3f',
         index=False,
         caption='Resultados da classificação do Índice de Segurança Lateral (ISL) — 3 classes (baixo/médio/alto), F1 macro, validação cruzada por rota.',
@@ -952,13 +686,14 @@ def treinar_modelo_isl(
     return df_res
 
 
-# ── Baseline físico (sem aprendizado) ─────────────────────────────────────────
+# Baseline físico (sem aprendizado
 
 def avaliar_baseline_fisico(
     df: pd.DataFrame,
     random_state: int = 42,
     test_size: float = 0.3,
     isl_max_cap_percentil: int | None = 99,
+    outdir: str = 'results',
 ) -> pd.DataFrame:
     """
     Baseline físico (sem treino), avaliado em conjunto de teste por rota com os
@@ -1017,9 +752,9 @@ def avaliar_baseline_fisico(
 
     df_res = pd.DataFrame(linhas)
     if not df_res.empty:
-        os.makedirs('results', exist_ok=True)
+        os.makedirs(outdir, exist_ok=True)
         df_res.to_latex(
-            'results/baseline_fisico.tex',
+            os.path.join(outdir, 'baseline.tex'),
             index=False,
             caption='Baseline físico (sem aprendizado) — argmax da simulação de Monte Carlo '
                     'para isl\\_class e fórmula do ISL para isl\\_max, avaliados no conjunto de '
@@ -1030,7 +765,43 @@ def avaliar_baseline_fisico(
     return df_res
 
 
-# ── Regressão genérica ────────────────────────────────────────────────────────
+# Regressão genérica
+
+def plotar_scatter_regressao(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target: str,
+    nome_modelo: str,
+    outdir: str = 'results',
+) -> None:
+    """
+    Scatter plot predicted vs actual para regressão.
+    Inclui linha de identidade (y=x) e R² anotado.
+    Salva em outdir/scatter_<target>_<nome_modelo>.pdf
+    """
+    from sklearn.metrics import r2_score
+    os.makedirs(outdir, exist_ok=True)
+
+    r2 = r2_score(y_true, y_pred)
+    lim = (min(y_true.min(), y_pred.min()) * 0.95,
+           max(y_true.max(), y_pred.max()) * 1.05)
+
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(y_true, y_pred, alpha=0.35, s=12, color='steelblue', edgecolors='none')
+    ax.plot(lim, lim, color='tomato', linewidth=1.2, linestyle='--', label='y = x')
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
+    ax.set_xlabel(f'Real — {target}')
+    ax.set_ylabel('Previsto')
+    ax.set_title(f'{nome_modelo}\nR² = {r2:.3f}')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(outdir, f'scatter_{target}_{nome_modelo.replace(" ", "_")}.pdf')
+    plt.savefig(path, bbox_inches='tight')
+    plt.close()
+    print(f"  Scatter salvo em {path}")
+
 
 def treinar_regressao(
     df: pd.DataFrame,
@@ -1041,6 +812,7 @@ def treinar_regressao(
     cv_folds: int = 5,
     pca_n_components=None,
     cap_percentil: int | None = 99,
+    outdir: str = 'results',
 ) -> pd.DataFrame:
     """
     Treina modelos de regressão para prever qualquer target contínuo.
@@ -1112,8 +884,7 @@ def treinar_regressao(
         )
 
         if plot:
-            from graphics.visualization import plotar_scatter_regressao
-            plotar_scatter_regressao(y_test, y_pred, target=target, nome_modelo=nome)
+            plotar_scatter_regressao(y_test, y_pred, target=target, nome_modelo=nome, outdir=outdir)
 
         linhas.append({
             'Modelo': nome, 'CV MAE': cv_mae, 'CV R²': cv_r2,
@@ -1121,10 +892,10 @@ def treinar_regressao(
         })
 
     df_res = pd.DataFrame(linhas)
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     safe = target.replace('/', '_')
     df_res.to_latex(
-        f'results/regressao_{safe}.tex',
+        os.path.join(outdir, f'regressao_{safe}.tex'),
         float_format='%.3f',
         index=False,
         caption=f'Resultados da regressão para o alvo \\texttt{{{target}}} — MAE, RMSE e $R^2$ em validação cruzada por rota e conjunto de teste.',

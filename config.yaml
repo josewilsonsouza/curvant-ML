@@ -110,6 +110,7 @@ neural_networks:
     solver: adam
     alpha: 0.001
     max_iter: 2000
+
   # Flag: --pytorch
   # MLP multi-tarefa PyTorch (5 heads: isl_max regressão + 4 cabeças binárias: manobra_accel, manobra_lateral, manobra_ziguezague, manobra_combinado).
   multitask_mlp:
@@ -130,7 +131,7 @@ montecarlo:
 # Flag: --ts
 # Opera sobre a janela pré-curva de dados brutos (sensores + escalares).
 time_series_regression:
-  model: [mlp, lstm, linear, xgboost]          # string ou lista - gru | lstm | cnn1d | mlp | linear | rf | xgboost
+  model: [mlp, lstm, gru, cnn1d, mlp, linear, xgboost]          # string ou lista - gru | lstm | cnn1d | mlp | linear | rf | xgboost
   # exemplos de lista: model: [gru, rf, xgboost]
   task: auto                  # auto (detecta pelo target) | regression | classification
   target: v_critica
@@ -138,6 +139,7 @@ time_series_regression:
   #   v_critica -> velocidade (km/h) no pico de ISL da curva; isl_class derivado via física
   # Classificação:   manobra_combinado_curva | manobra_accel_curva | manobra_lateral_curva
   #                  manobra_ziguezague_curva | isl_class
+
   sensors:
     - vehicle_speed
     - accel_x
@@ -159,12 +161,12 @@ time_series_regression:
     - mc_p_baixo               # MC - P(ISL < 0.5) simulado
     - mc_p_medio               # MC - P(0.5 ≤ ISL < 0.8) simulado
     - mc_p_alto                # MC - P(ISL ≥ 0.8) simulado
-    - v_pred_kinematica        # cinemático - velocidade mínima prevista na entrada (km/h)
     - prop_perigosas_antes      # F5 - proporção de curvas perigosas anteriores
     - n_curvas_antes            # F5 - nº de curvas percorridas antes
+
   target_cap_percentil: 99  # remove extremos clipados (null = sem filtro)
   n_timesteps: 50     # comprimento fixo após reamostragem da janela pré-curva
-  epochs: 200
+  epochs: 400
   batch_size: 32
   lr: 0.005
   dropout: 0.3

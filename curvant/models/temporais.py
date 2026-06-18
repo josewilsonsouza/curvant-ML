@@ -51,7 +51,7 @@ try:
 except ImportError:
     _HAS_XGB = False
 
-from src.models import _base_route
+from curvant.models.tabular import _base_route
 
 _SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
 
@@ -74,7 +74,7 @@ def _v_para_isl_class(v_kmh: np.ndarray, raios: np.ndarray) -> np.ndarray:
     return np.where(isl < 0.5, 0, np.where(isl < 0.8, 1, 2)).astype(int)
 
 
-def _baseline_persistencia_vcritica(y_test, raios_test, preditores: dict) -> None:
+def _baseline_persistencia_vcritica(y_test, raios_test, preditores: dict, outdir: str = 'results') -> None:
     """
     Baselines de persistência para v_critica (sem aprendizado), avaliados no MESMO
     conjunto de teste e com o MESMO raio (f4_raio_min) dos modelos.
@@ -84,20 +84,36 @@ def _baseline_persistencia_vcritica(y_test, raios_test, preditores: dict) -> Non
       - 'vel_aprox_media'     : média da velocidade na janela pré-curva (persistência pura)
 
     Quantifica quanto os modelos agregam além de "a velocidade na curva ≈ a de
-    aproximação". Dois baselines distinguem tarefa difícil de feature enviesada.
+    aproximação". Salva o resultado em outdir/baseline.tex.
     """
     print(f"\n  [BASELINE persistência]  v_critica (sem treino)")
+    linhas = []
     for nome, pred in preditores.items():
         r2  = r2_score(y_test, pred)
         mae = mean_absolute_error(y_test, pred)
         linha = f"  {nome:22s}  R²: {r2:7.4f}  MAE: {mae:6.3f} km/h"
+        registro = {'Baseline': nome, 'R²': round(r2, 4), 'MAE (km/h)': round(mae, 3)}
         if raios_test is not None:
             cls_pred = _v_para_isl_class(pred, raios_test)
             cls_true = _v_para_isl_class(y_test, raios_test)
             f1  = f1_score(cls_true, cls_pred, average='macro', zero_division=0)
             acc = accuracy_score(cls_true, cls_pred)
             linha += f"  | isl_class F1: {f1:.4f}  Acc: {acc:.4f}"
+            registro['isl_class F1'] = round(f1, 4)
+            registro['isl_class Acc'] = round(acc, 4)
         print(linha)
+        linhas.append(registro)
+
+    if linhas:
+        os.makedirs(outdir, exist_ok=True)
+        pd.DataFrame(linhas).to_latex(
+            os.path.join(outdir, 'baseline.tex'),
+            index=False,
+            caption='Baseline de persistência para v\\_critica (sem aprendizado), no mesmo '
+                    'conjunto de teste por rota dos modelos.',
+            label='tab:baseline_vcritica',
+            position='h',
+        )
 
 
 def _detectar_task(target: str, task_cfg: str) -> tuple[str, int]:
@@ -109,7 +125,7 @@ def _detectar_task(target: str, task_cfg: str) -> tuple[str, int]:
     return 'regression', 1
 
 
-# ── Extração de sequências ─────────────────────────────────────────────────────
+# Extração de sequências
 
 def extrair_sequencias_precurva(
     df_analysis: pd.DataFrame,
@@ -208,7 +224,7 @@ def extrair_sequencias_precurva(
     return np.array(sequences, dtype=np.float32), np.array(targets, dtype=np.float32), np.array(rotas), n_temporal
 
 
-# ── Modelos neurais ───────────────────────────────────────────────────────────
+# Modelos neurais
 
 class GRURegressor(nn.Module):
     def __init__(self, n_sensors: int, n_scalars: int = 0, hidden_size: int = 64, n_layers: int = 1,
@@ -338,7 +354,7 @@ def _flatten_para_classico(X: np.ndarray, n_temporal: int) -> np.ndarray:
     return np.concatenate(parts, axis=1).astype(np.float32)
 
 
-# ── Clássicos ─────────────────────────────────────────────────────────────────
+# Clássicos
 
 def _build_classico(nome: str, rnd: int, task: str, y_train: np.ndarray | None = None):
     if task == 'classification':
@@ -380,6 +396,7 @@ def _treinar_um_classico(
     task: str = 'regression',
     n_classes: int = 1,
     raios_test: np.ndarray | None = None,
+    outdir: str = 'results',
 ) -> dict:
     label = {'linear': 'Ridge' if task == 'regression' else 'LogisticReg',
              'rf': 'RandomForest', 'xgboost': 'XGBoost'}[nome]
@@ -394,7 +411,7 @@ def _treinar_um_classico(
         print(f"  {label:<15s} F1: {f1:.4f}  Acc: {acc:.4f}")
 
         if plot:
-            os.makedirs('results', exist_ok=True)
+            os.makedirs(outdir, exist_ok=True)
             cm  = confusion_matrix(y_test.astype(int), y_pred)
             fig, ax = plt.subplots(figsize=(4, 3))
             im = ax.imshow(cm, cmap='Blues')
@@ -404,7 +421,7 @@ def _treinar_um_classico(
             ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
             ax.set_title(f'TS {label} — {target}\nF1={f1:.3f}')
             fig.colorbar(im, ax=ax); fig.tight_layout()
-            fig.savefig(f'results/ts_cm_{nome}_{target}.pdf', bbox_inches='tight')
+            fig.savefig(os.path.join(outdir, f'cm_{nome}_{target}.pdf'), bbox_inches='tight')
             plt.close(fig)
 
         return {'Modelo': label, 'F1': f1, 'Acc': acc}
@@ -425,7 +442,7 @@ def _treinar_um_classico(
             print(f"    → isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
 
         if plot:
-            os.makedirs('results', exist_ok=True)
+            os.makedirs(outdir, exist_ok=True)
             unit = 'km/h' if target == 'v_critica' else 'm/s²'
             fig, ax = plt.subplots(figsize=(5, 4))
             ax.scatter(y_test, y_pred, alpha=0.4, s=15)
@@ -435,7 +452,7 @@ def _treinar_um_classico(
             ax.set_ylabel(f'{target} previsto ({unit})')
             ax.set_title(f'{label} — R²={r2:.3f}  MAE={mae:.3f}')
             fig.tight_layout()
-            fig.savefig(f'results/ts_scatter_{nome}.pdf', bbox_inches='tight')
+            fig.savefig(os.path.join(outdir, f'scatter_{nome}.pdf'), bbox_inches='tight')
             plt.close(fig)
 
             if cls_pred_isl is not None:
@@ -451,13 +468,13 @@ def _treinar_um_classico(
                 ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
                 ax.set_title(f'{label} — isl_class via v_critica\nF1={f1_isl:.3f}')
                 fig.colorbar(im, ax=ax); fig.tight_layout()
-                fig.savefig(f'results/ts_cm_{nome}_isl_via_vcritica.pdf', bbox_inches='tight')
+                fig.savefig(os.path.join(outdir, f'cm_{nome}_isl.pdf'), bbox_inches='tight')
                 plt.close(fig)
 
         return {'Modelo': label, 'R²': r2, 'MAE (km/h)': mae}
 
 
-# ── Neural ────────────────────────────────────────────────────────────────────
+# Neural
 
 def _treinar_um_neural(
     model_type: str,
@@ -483,6 +500,7 @@ def _treinar_um_neural(
     n_seq_sensor: int = 0,
     weight_decay: float = 0.0,
     raios_test: np.ndarray | None = None,
+    outdir: str = 'results',
 ) -> nn.Module:
     n_total   = X_train.shape[2]
     n_sens    = n_seq_sensor if n_seq_sensor > 0 else n_total
@@ -596,7 +614,7 @@ def _treinar_um_neural(
     with torch.no_grad():
         raw_out = model(torch.FloatTensor(X_test))
 
-    os.makedirs('results', exist_ok=True)
+    os.makedirs(outdir, exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 3))
     ax.plot(hist_train, label='treino', alpha=0.8)
     ax.plot(hist_val,   label='val',    alpha=0.8)
@@ -605,7 +623,7 @@ def _treinar_um_neural(
     ax.set_title(f'Loss — {model_type.upper()} {task} {target}')
     ax.legend()
     fig.tight_layout()
-    fig.savefig(f'results/ts_loss_{model_type}_{target}.pdf', bbox_inches='tight')
+    fig.savefig(os.path.join(outdir, f'loss_{model_type}_{target}.pdf'), bbox_inches='tight')
     plt.close(fig)
 
     if task == 'regression':
@@ -632,7 +650,7 @@ def _treinar_um_neural(
             ax.set_ylabel(f'{target} previsto ({unit})')
             ax.set_title(f'{model_type.upper()} — R²={r2:.3f}  MAE={mae:.3f}')
             fig.tight_layout()
-            fig.savefig(f'results/ts_scatter_{model_type}_{target}.pdf', bbox_inches='tight')
+            fig.savefig(os.path.join(outdir, f'scatter_{model_type}_{target}.pdf'), bbox_inches='tight')
             plt.close(fig)
 
             if cls_pred_isl is not None:
@@ -648,7 +666,7 @@ def _treinar_um_neural(
                 ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
                 ax.set_title(f'{model_type.upper()} — isl_class via v_critica\nF1={f1_isl:.3f}')
                 fig.colorbar(im, ax=ax); fig.tight_layout()
-                fig.savefig(f'results/ts_cm_{model_type}_isl_via_vcritica.pdf', bbox_inches='tight')
+                fig.savefig(os.path.join(outdir, f'cm_{model_type}_isl.pdf'), bbox_inches='tight')
                 plt.close(fig)
 
     else:
@@ -672,19 +690,20 @@ def _treinar_um_neural(
             ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
             ax.set_title(f'TS {model_type.upper()} — {target}\nF1={f1:.3f}')
             fig.colorbar(im, ax=ax); fig.tight_layout()
-            fig.savefig(f'results/ts_cm_{model_type}_{target}.pdf', bbox_inches='tight')
+            fig.savefig(os.path.join(outdir, f'cm_{model_type}_{target}.pdf'), bbox_inches='tight')
             plt.close(fig)
 
     return model
 
 
-# ── Orquestração ──────────────────────────────────────────────────────────────
+# Orquestração
 
 def treinar_regressao_ts(
     df_analysis: pd.DataFrame,
     features_df: pd.DataFrame,
     cfg: dict,
     plot: bool = False,
+    outdir: str = 'results',
 ) -> None:
     """
     Treina modelos de série temporal (regressão ou classificação) sobre
@@ -808,7 +827,7 @@ def treinar_regressao_ts(
             vs_idx = sensors.index('vehicle_speed')
             preditores['vel_aprox_media'] = X_test[:, :, vs_idx].mean(axis=1).copy()
         if preditores:
-            _baseline_persistencia_vcritica(y_test, raios_test, preditores)
+            _baseline_persistencia_vcritica(y_test, raios_test, preditores, outdir=outdir)
 
     # Normaliza sensores (fit apenas no treino) — compartilhado por todos os modelos
     for j in range(n_sensors):
@@ -827,7 +846,7 @@ def treinar_regressao_ts(
             _treinar_um_classico(
                 model_type, X_train_flat, X_test_flat, y_train, y_test,
                 target=target, plot=plot, rnd=rnd, task=task, n_classes=n_classes,
-                raios_test=raios_test,
+                raios_test=raios_test, outdir=outdir,
             )
         else:
             _treinar_um_neural(
@@ -839,5 +858,5 @@ def treinar_regressao_ts(
                 task=task, n_classes=n_classes,
                 patience=patience, val_size=val_size_nn,
                 n_seq_sensor=n_seq_sensor, weight_decay=weight_decay,
-                raios_test=raios_test,
+                raios_test=raios_test, outdir=outdir,
             )

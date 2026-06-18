@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import folium
 
-from src.curve_detection import detectar_curvas
+from curvant.driving.curve_detection import detectar_curvas
 
 
 def plot_trajeto_com_curvatura(df, sigma=2, limite_raio=100, min_pontos=3,
@@ -116,79 +116,3 @@ def plotar_trajeto_conducao(df: pd.DataFrame, tipo: str = 'conducao') -> None:
     ax[1].legend()
     ax[1].grid(True)
     plt.close()
-
-
-def plotar_curva_treinamento(history) -> None:
-    """Plota acurácia de treino e validação ao longo das épocas (para modelos Keras)."""
-    plt.figure(figsize=(8, 5))
-    plt.plot(history.history['accuracy'], label='Treinamento', color='blue')
-    plt.plot(history.history['val_accuracy'], label='Validação', color='orange')
-    plt.title('Acurácia por Época')
-    plt.xlabel('Épocas')
-    plt.ylabel('Acurácia')
-    plt.legend()
-    plt.grid(True)
-    os.makedirs('results', exist_ok=True)
-    plt.savefig('results/curva_treinamento_keras.pdf', bbox_inches='tight')
-    plt.close()
-
-
-def plotar_loss_pytorch(historico: list, nome: str = 'multitask_mlp') -> None:
-    """
-    Plota a curva de loss por época do treino PyTorch.
-    historico: lista de floats, um valor de loss médio por época.
-    Salva em results/pytorch_loss_<nome>.pdf
-    """
-    os.makedirs('results', exist_ok=True)
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(range(1, len(historico) + 1), historico, color='steelblue', linewidth=1.5)
-    ax.set_title(f'Loss por Época — {nome}')
-    ax.set_xlabel('Época')
-    ax.set_ylabel('Loss médio (batch)')
-    ax.grid(True, alpha=0.4)
-    # Marca época de menor loss
-    min_epoch = int(np.argmin(historico)) + 1
-    min_val   = min(historico)
-    ax.axvline(min_epoch, color='tomato', linestyle='--', linewidth=1,
-               label=f'Mín: época {min_epoch} ({min_val:.4f})')
-    ax.legend()
-    fig.tight_layout()
-    path = f'results/pytorch_loss_{nome}.pdf'
-    plt.savefig(path, bbox_inches='tight')
-    plt.close()
-    print(f"  Loss curve salva em {path}")
-
-
-def plotar_scatter_regressao(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    target: str,
-    nome_modelo: str,
-) -> None:
-    """
-    Scatter plot predicted vs actual para regressão.
-    Inclui linha de identidade (y=x) e R² anotado.
-    Salva em results/scatter_<target>_<nome_modelo>.pdf
-    """
-    from sklearn.metrics import r2_score
-    os.makedirs('results', exist_ok=True)
-
-    r2  = r2_score(y_true, y_pred)
-    lim = (min(y_true.min(), y_pred.min()) * 0.95,
-           max(y_true.max(), y_pred.max()) * 1.05)
-
-    fig, ax = plt.subplots(figsize=(5, 5))
-    ax.scatter(y_true, y_pred, alpha=0.35, s=12, color='steelblue', edgecolors='none')
-    ax.plot(lim, lim, color='tomato', linewidth=1.2, linestyle='--', label='y = x')
-    ax.set_xlim(lim)
-    ax.set_ylim(lim)
-    ax.set_xlabel(f'Real — {target}')
-    ax.set_ylabel('Previsto')
-    ax.set_title(f'{nome_modelo}\nR² = {r2:.3f}')
-    ax.legend(fontsize=9)
-    ax.grid(True, alpha=0.3)
-    fig.tight_layout()
-    path = f'results/scatter_{target}_{nome_modelo.replace(" ", "_")}.pdf'
-    plt.savefig(path, bbox_inches='tight')
-    plt.close()
-    print(f"  Scatter salvo em {path}")
