@@ -47,7 +47,7 @@ risk_measures:
   janela_aproximacao: 5        # s de aproximação incluídos na avaliação de cada curva
   kamm_alpha: 0.7              # fração do limite de aderência (μg) p/ o critério de Kamm
                                # 0.7 -> limiar = 0.7 × 0.6 × 9.81 ≈ 4.12 m/s²
-  limiar_accel_lateral: 2.0    # m/s² - |accel_y|_max mínimo p/ o critério lateral (DNIT ≥ média)
+  limiar_accel_lateral: 2.0    # m/s² - |accel_y|_max mínimo p/ o critério lateral (DNIT >= média)
   zigue_zague:
     limiar_bearing: 15         # graus - mudança mínima de direção
     limiar_accel_lateral: 0.3  # m/s² - aceleração lateral mínima

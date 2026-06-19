@@ -1,6 +1,19 @@
-# CurvantML
+<p align="center">
+  <img src="images/curvantML.png" alt="CurvantML" width="400">
+</p>
 
-Framework para prever, momentos antes de o motorista entrar numa curva, o quão arriscada ela vai ser, a partir de dados de sensores veiculares OBD Link. Todas as features saem de uma janela antes da curva, e a janela termina com uma folga (`lead_gap`, 30 m) da entrada.
+<p align="center">
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="scikit-learn" src="https://img.shields.io/badge/scikit--learn-F7931E?logo=scikit-learn&logoColor=white">
+  <img alt="XGBoost" src="https://img.shields.io/badge/XGBoost-189FDD">
+  <img alt="Optuna" src="https://img.shields.io/badge/Optuna-tuning-7B3FE4">
+  <a href="https://huggingface.co/datasets/jwsouza13/routes_ML_inmetro">
+    <img alt="Dataset" src="https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-HuggingFace-FFD21E">
+  </a>
+</p>
+
+Queremos prever, momentos antes de o motorista entrar numa curva, se ele realizará uma condução segura ou de risco, a partir de dados de sensores veiculares OBD Link. Todas as features saem de uma janela antes da curva, e a janela termina com uma folga (`lead_gap`, 30 m) da entrada.
 
 ## Instalação e execução
 Clone este repositório:
