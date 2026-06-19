@@ -2,7 +2,7 @@
 CurvantML — Modelos de série temporal: regressão e classificação.
 
 Opera sobre dados brutos da janela pré-curva (não estatísticas agregadas).
-Modelos configuráveis via config.yaml > time_series_regression > model
+Modelos configuráveis via config.yaml > temporais > model
 (string simples ou lista):
 
   Neurais (dados sequenciais):
@@ -16,7 +16,7 @@ Modelos configuráveis via config.yaml > time_series_regression > model
     rf      — Random Forest
     xgboost — XGBoost
 
-Tarefa configurável via config.yaml > time_series_regression > task:
+Tarefa configurável via config.yaml > temporais > task:
     regression     — MSE / R² / MAE
     classification — CrossEntropy ou BCE / F1
 
@@ -51,13 +51,12 @@ try:
 except ImportError:
     _HAS_XGB = False
 
+from curvant.constants import G as _G_TS, MU as _MU_TS, ISL_BAIXO, ISL_ALTO
 from curvant.models.tabular import _base_route
 
 _SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
 
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
-_G_TS  = 9.81
-_MU_TS = 0.6
 
 # Targets de classificação e número de classes
 _TARGETS_BINARIOS_TS  = {
@@ -71,7 +70,7 @@ _TARGETS_CLASSIF_TS    = _TARGETS_BINARIOS_TS | set(_TARGETS_MULTICLASS_TS)
 def _v_para_isl_class(v_kmh: np.ndarray, raios: np.ndarray) -> np.ndarray:
     """Converte velocidade (km/h) + raio (m) → classe ISL (0=baixo,1=medio,2=alto)."""
     isl = (v_kmh / 3.6) ** 2 / (raios * _G_TS * _MU_TS)
-    return np.where(isl < 0.5, 0, np.where(isl < 0.8, 1, 2)).astype(int)
+    return np.where(isl < ISL_BAIXO, 0, np.where(isl < ISL_ALTO, 1, 2)).astype(int)
 
 
 def _baseline_persistencia_vcritica(y_test, raios_test, preditores: dict, outdir: str = 'results') -> None:
@@ -614,17 +613,18 @@ def _treinar_um_neural(
     with torch.no_grad():
         raw_out = model(torch.FloatTensor(X_test))
 
-    os.makedirs(outdir, exist_ok=True)
-    fig, ax = plt.subplots(figsize=(7, 3))
-    ax.plot(hist_train, label='treino', alpha=0.8)
-    ax.plot(hist_val,   label='val',    alpha=0.8)
-    ax.axvline(len(hist_train) - no_improve, color='r', linestyle='--', linewidth=0.8, label='best')
-    ax.set_xlabel('Época'); ax.set_ylabel(loss_label)
-    ax.set_title(f'Loss — {model_type.upper()} {task} {target}')
-    ax.legend()
-    fig.tight_layout()
-    fig.savefig(os.path.join(outdir, f'loss_{model_type}_{target}.pdf'), bbox_inches='tight')
-    plt.close(fig)
+    if plot:
+        os.makedirs(outdir, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(7, 3))
+        ax.plot(hist_train, label='treino', alpha=0.8)
+        ax.plot(hist_val,   label='val',    alpha=0.8)
+        ax.axvline(len(hist_train) - no_improve, color='r', linestyle='--', linewidth=0.8, label='best')
+        ax.set_xlabel('Época'); ax.set_ylabel(loss_label)
+        ax.set_title(f'Loss — {model_type.upper()} {task} {target}')
+        ax.legend()
+        fig.tight_layout()
+        fig.savefig(os.path.join(outdir, f'loss_{model_type}_{target}.pdf'), bbox_inches='tight')
+        plt.close(fig)
 
     if task == 'regression':
         y_pred = y_scaler.inverse_transform(raw_out.numpy().reshape(-1, 1)).ravel()
@@ -708,9 +708,9 @@ def treinar_regressao_ts(
     """
     Treina modelos de série temporal (regressão ou classificação) sobre
     dados brutos da janela pré-curva.
-    Configurado em config.yaml > time_series_regression.
+    Configurado em config.yaml > temporais.
     """
-    ts_cfg    = cfg.get('time_series_regression', {})
+    ts_cfg    = cfg.get('temporais', {})
     raw_model = ts_cfg.get('model', 'gru')
     modelos   = [raw_model.lower()] if isinstance(raw_model, str) else [m.lower() for m in raw_model]
 

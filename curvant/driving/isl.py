@@ -1,12 +1,12 @@
 import numpy as np
 import pandas as pd
 
-_G: float = 9.81  # aceleração gravitacional (m/s²)
+from curvant.constants import G as _G, MU, ISL_BAIXO, ISL_ALTO
 
 # Limiares de classificação baseados em ISL_max da curva
 _LIMIARES: list[tuple[float, str]] = [
-    (0.5, 'baixo'),   # ISL < 0.5
-    (0.8, 'medio'),   # 0.5 ≤ ISL < 0.8
+    (ISL_BAIXO, 'baixo'),   # ISL < ISL_BAIXO
+    (ISL_ALTO,  'medio'),   # ISL_BAIXO ≤ ISL < ISL_ALTO
 ]
 
 _CLASS_MAP: dict[str, int] = {'baixo': 0, 'medio': 1, 'alto': 2}
@@ -19,7 +19,7 @@ def classificar_isl(isl: float) -> str:
     return 'alto'
 
 
-def calcular_isl(df: pd.DataFrame, mu: float = 0.6) -> pd.DataFrame:
+def calcular_isl(df: pd.DataFrame, mu: float = MU) -> pd.DataFrame:
     """
     Adiciona a coluna 'isl' ponto a ponto ao DataFrame.
 
@@ -37,7 +37,7 @@ def calcular_isl(df: pd.DataFrame, mu: float = 0.6) -> pd.DataFrame:
 
 def calcular_isl_por_curva(
     dfs_curves: pd.DataFrame,
-    mu: float = 0.6,
+    mu: float = MU,
 ) -> pd.DataFrame:
     """
     Agrega o ISL por trecho de curva (id_route, trecho_curvo).

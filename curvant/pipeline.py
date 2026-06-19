@@ -11,10 +11,9 @@ import numpy as np
 import pandas as pd
 
 from curvant.driving.risk_measures import caracterizar_conducao
-from curvant.driving.curve_detection import detectar_curvas, identificar_trechos_curvos
+from curvant.driving.curve_detection import detectar_curvas, identificar_trechos_curvos, contar_curvas
 from curvant.driving.features import extrair_features
 from curvant.models.montecarlo import aplicar_mc_features
-from curvant.utils.config import contar_curvas
 
 _DIR_RISCO       = 'results/risco'
 _DIR_ISL         = 'results/isl'
@@ -45,7 +44,7 @@ def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
 
 def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
     """Etapa 4: classifica janelas com a taxonomia explícita de risco."""
-    da = cfg['driving_analysis']
+    da = cfg['risk_measures']
 
     partes = []
     for _, dt in dfs_curves.groupby('id_route', sort=False):
@@ -91,7 +90,6 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     ft = cfg['features']
     features_df = extrair_features(
         dfs_trechos,
-        janela_tempo=ft['janela_tempo'],
         janela_distancia=ft.get('janela_distancia'),
         janela_acel_confort=ft.get('janela_acel_confort', 2.5),
         janela_distancia_min=ft.get('janela_distancia_min', 50.0),
@@ -250,8 +248,7 @@ def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
     """Treina o MLP multi-tarefa PyTorch com split por id_route."""
     from curvant.models import treinar_multitask_mlp
 
-    nn_cfg = cfg.get('neural_networks', {})
-    pt_cfg = nn_cfg.get('multitask_mlp', {})
+    pt_cfg = cfg.get('multitarefa', {})
 
     treinar_multitask_mlp(
         features_df,

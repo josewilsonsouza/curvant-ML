@@ -148,22 +148,30 @@ def _derive_output(in_path: str) -> str:
     base, ext = os.path.splitext(in_path)
     return f"{base}_clean{ext}"
 
-def main(args: argparse.Namespace) -> None:
-    """Orquestra o pré-processamento de dados."""
+def executar_preprocessamento(
+    in_path: str | None = None,
+    out_path: str | None = None,
+    overrides: dict | None = None,
+) -> None:
+    """
+    Roda o pré-processamento usando os parâmetros do config.yaml (+ overrides
+    opcionais). Não depende de argparse — pode ser chamado direto (ex.: do run.py).
+    """
     cfg = carregar_config()
-    pp = cfg.get('preprocessing', {})
+    pp  = cfg.get('preprocessing', {})
+    ov  = overrides or {}
 
-    # Resolve argumentos: CLI > config.yaml > defaults
-    _arg = lambda v, key, default: v if v is not None else pp.get(key, default)
-    accel_limite             = _arg(args.accel_limite,             'accel_limite',             5.0)
-    vel_max                  = _arg(args.vel_max,                  'vel_max',                  150.0)
-    vel_min_parado           = _arg(args.vel_min_parado,           'vel_min_parado',           2.0)
-    max_parados_consecutivos = _arg(args.max_parados_consecutivos, 'max_parados_consecutivos', 3)
-    max_gap                  = _arg(args.max_gap,                  'max_gap',                  30.0)
-    min_pontos_segmento      = _arg(args.min_pontos_segmento,      'min_pontos_segmento',      10)
+    # Resolve cada parâmetro: override (se não-None) > config.yaml > default
+    _p = lambda key, default: ov[key] if ov.get(key) is not None else pp.get(key, default)
+    accel_limite             = _p('accel_limite',             5.0)
+    vel_max                  = _p('vel_max',                  150.0)
+    vel_min_parado           = _p('vel_min_parado',           2.0)
+    max_parados_consecutivos = _p('max_parados_consecutivos', 3)
+    max_gap                  = _p('max_gap',                  30.0)
+    min_pontos_segmento      = _p('min_pontos_segmento',      10)
 
-    in_path  = args.input  or _DEFAULT_INPUT
-    out_path = args.output or _derive_output(in_path)
+    in_path  = in_path  or _DEFAULT_INPUT
+    out_path = out_path or _derive_output(in_path)
 
     print(f"Carregando {in_path} ...")
     df = pd.read_parquet(in_path)
@@ -199,6 +207,20 @@ def main(args: argparse.Namespace) -> None:
 
     df_clean.to_parquet(out_path, index=False)
     print(f"\nSalvo em: {out_path}")
+
+
+def main(args: argparse.Namespace) -> None:
+    """Entrada CLI: resolve os argumentos e delega para executar_preprocessamento."""
+    overrides = {
+        'accel_limite':             args.accel_limite,
+        'vel_max':                  args.vel_max,
+        'vel_min_parado':           args.vel_min_parado,
+        'max_parados_consecutivos': args.max_parados_consecutivos,
+        'max_gap':                  args.max_gap,
+        'min_pontos_segmento':      args.min_pontos_segmento,
+    }
+    executar_preprocessamento(args.input, args.output, overrides)
+
 
 def criar_parser() -> argparse.ArgumentParser:
     """Cria parser de argumentos para CLI."""

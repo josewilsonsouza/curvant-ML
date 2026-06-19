@@ -20,10 +20,9 @@ Se `f4_raio_min` estiver ausente ou zero, as colunas mc_p_* ficam 0.0.
 import numpy as np
 import pandas as pd
 
-_G               = 9.81   # m/s²
-_MU              = 0.6    # coeficiente de atrito lateral (asfalto seco)
-_ISL_BAIXO_MAX   = 0.5    # ISL < 0.5  → baixo
-_ISL_MEDIO_MAX   = 0.8    # ISL < 0.8  → médio  (≥ 0.8 → alto)
+from curvant.constants import (
+    G as _G, MU as _MU, ISL_BAIXO as _ISL_BAIXO_MAX, ISL_ALTO as _ISL_MEDIO_MAX,
+)
 
 
 def simular_risco_monte_carlo(

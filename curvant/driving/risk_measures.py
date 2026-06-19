@@ -1,8 +1,7 @@
 import numpy as np
 import pandas as pd
 
-_G:  float = 9.81   # m/s²
-_MU: float = 0.6    # coeficiente de atrito estático — asfalto seco
+from curvant.constants import G as _G, MU as _MU
 
 _DNIT_RISCO: dict[str, int] = {
     'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4,

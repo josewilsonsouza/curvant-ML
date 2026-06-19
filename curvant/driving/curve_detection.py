@@ -4,6 +4,21 @@ from scipy.interpolate import make_interp_spline, splprep, splev
 from scipy.ndimage import gaussian_filter1d, binary_opening
 
 
+def contar_curvas(dfs_curves: pd.DataFrame) -> dict[str, int]:
+    """Retorna {id_route: nº de curvas detectadas} (corridas contíguas de curva=True)."""
+    contagem = {}
+    for traj, df in dfs_curves.groupby('id_route', sort=False):
+        n, em_sequencia = 0, False
+        for val in df['curva']:
+            if val and not em_sequencia:
+                n += 1
+                em_sequencia = True
+            elif not val:
+                em_sequencia = False
+        contagem[traj] = n
+    return contagem
+
+
 # Derivadas da trajetória via spline
 
 def _derivadas_spline(

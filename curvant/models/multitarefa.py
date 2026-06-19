@@ -24,7 +24,9 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
 
-from curvant.models.tabular import _COLS_EXCLUIR, _base_route
+from curvant.constants import ISL_BAIXO, ISL_ALTO
+from curvant.driving.features import colunas_features
+from curvant.models.tabular import _base_route
 
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
 _ISL_LABELS  = {0: 'baixo', 1: 'medio', 2: 'alto'}
@@ -141,6 +143,7 @@ def treinar_multitask_mlp(
     random_state: int = 42,
     lambdas: dict = None,
     outdir: str = 'results',
+    plot: bool = True,
 ) -> MultiTaskMLP:
     """
     Treina o MultiTaskMLP com split por id_route.
@@ -152,7 +155,7 @@ def treinar_multitask_mlp(
     if lambdas is None:
         lambdas = _LAMBDAS_PADRAO.copy()
 
-    feature_cols = [c for c in df.columns if c not in _COLS_EXCLUIR]
+    feature_cols = colunas_features(df)
     id_routes    = df['id_route'].astype(str)
     base_rotas   = list({_base_route(r) for r in id_routes})
     train_base, test_base = train_test_split(base_rotas, test_size=test_size, random_state=random_state)
@@ -220,13 +223,13 @@ def treinar_multitask_mlp(
             lr_atual = optimizer.param_groups[0]['lr']
             print(f"    Época {epoch + 1}/{epochs} — Loss: {loss_medio:.4f}  LR: {lr_atual:.2e}")
 
-    plotar_loss_pytorch(historico_loss, nome='multitarefa', outdir=outdir)
+    if plot:
+        plotar_loss_pytorch(historico_loss, nome='multitarefa', outdir=outdir)
 
     model.eval()
     with torch.no_grad():
         preds_test = model(torch.FloatTensor(X_test))
 
-    os.makedirs(outdir, exist_ok=True)
     print("\n  MultiTaskMLP — Métricas (teste, split por rota):")
     for key in target_cols_presentes:
         if key not in preds_test or key not in test_targets:
@@ -241,43 +244,47 @@ def treinar_multitask_mlp(
             # deriva isl_class a partir dos limiares e reporta F1-macro
             if 'isl_class' in df.columns:
                 y_cls  = df.loc[id_routes.map(_base_route).isin(test_base_set), 'isl_class'].map(_ISL_ENCODE).fillna(0).values
-                p_cls  = np.where(p < 0.5, 0, np.where(p < 0.8, 1, 2))
+                p_cls  = np.where(p < ISL_BAIXO, 0, np.where(p < ISL_ALTO, 1, 2))
                 f1_cls = f1_score(y_cls.astype(int), p_cls, average='macro', zero_division=0)
                 print(f"    isl_class (via isl_max)  F1-macro: {f1_cls:.4f}")
-                cm = confusion_matrix(y_cls.astype(int), p_cls)
-                fig, ax = plt.subplots(figsize=(4, 3))
-                im = ax.imshow(cm, cmap='Blues')
-                ticks = [_ISL_LABELS[i] for i in range(3)]
-                ax.set_xticks(range(3)); ax.set_xticklabels(ticks)
-                ax.set_yticks(range(3)); ax.set_yticklabels(ticks)
-                for i in range(3):
-                    for j in range(3):
-                        ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
-                ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
-                ax.set_title(f'PyTorch — isl_class  F1={f1_cls:.3f}')
-                fig.colorbar(im, ax=ax)
-                fig.tight_layout()
-                fig.savefig(os.path.join(outdir, 'cm_isl_class.pdf'), bbox_inches='tight')
-                plt.close(fig)
+                if plot:
+                    cm = confusion_matrix(y_cls.astype(int), p_cls)
+                    fig, ax = plt.subplots(figsize=(4, 3))
+                    im = ax.imshow(cm, cmap='Blues')
+                    ticks = [_ISL_LABELS[i] for i in range(3)]
+                    ax.set_xticks(range(3)); ax.set_xticklabels(ticks)
+                    ax.set_yticks(range(3)); ax.set_yticklabels(ticks)
+                    for i in range(3):
+                        for j in range(3):
+                            ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
+                    ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
+                    ax.set_title(f'PyTorch — isl_class  F1={f1_cls:.3f}')
+                    fig.colorbar(im, ax=ax)
+                    fig.tight_layout()
+                    os.makedirs(outdir, exist_ok=True)
+                    fig.savefig(os.path.join(outdir, 'cm_isl_class.pdf'), bbox_inches='tight')
+                    plt.close(fig)
 
         else:
             pred_labels = (p > 0.0).astype(int)
             f1 = f1_score(y.astype(int), pred_labels, average='weighted', zero_division=0)
             print(f"    {key:<30s} F1: {f1:.4f}")
-            cm = confusion_matrix(y.astype(int), pred_labels)
-            fig, ax = plt.subplots(figsize=(3, 3))
-            im = ax.imshow(cm, cmap='Blues')
-            for i in range(2):
-                for j in range(2):
-                    ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=10)
-            ax.set_xticks([0, 1]); ax.set_xticklabels(['Segura', 'Risco'])
-            ax.set_yticks([0, 1]); ax.set_yticklabels(['Segura', 'Risco'])
-            ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
-            short = key.replace('manobra_', '').replace('_curva', '')
-            ax.set_title(f'PyTorch — {short}  F1={f1:.3f}')
-            fig.colorbar(im, ax=ax)
-            fig.tight_layout()
-            fig.savefig(os.path.join(outdir, f'cm_{short}.pdf'), bbox_inches='tight')
-            plt.close(fig)
+            if plot:
+                cm = confusion_matrix(y.astype(int), pred_labels)
+                fig, ax = plt.subplots(figsize=(3, 3))
+                im = ax.imshow(cm, cmap='Blues')
+                for i in range(2):
+                    for j in range(2):
+                        ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=10)
+                ax.set_xticks([0, 1]); ax.set_xticklabels(['Segura', 'Risco'])
+                ax.set_yticks([0, 1]); ax.set_yticklabels(['Segura', 'Risco'])
+                ax.set_xlabel('Prevista'); ax.set_ylabel('Real')
+                short = key.replace('manobra_', '').replace('_curva', '')
+                ax.set_title(f'PyTorch — {short}  F1={f1:.3f}')
+                fig.colorbar(im, ax=ax)
+                fig.tight_layout()
+                os.makedirs(outdir, exist_ok=True)
+                fig.savefig(os.path.join(outdir, f'cm_{short}.pdf'), bbox_inches='tight')
+                plt.close(fig)
 
     return model

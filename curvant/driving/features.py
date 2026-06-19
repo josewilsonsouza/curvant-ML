@@ -1,13 +1,43 @@
 import numpy as np
 import pandas as pd
 
+from curvant.constants import G as _G, MU as _MU_PADRAO, ISL_ALTO
 from curvant.driving.isl import classificar_isl
-
-_G         = 9.81
-_MU_PADRAO = 0.6
 
 # Encoding numérico da classe DNIT para feature prev_dnit_num
 _DNIT_NUM = {'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4}
+
+# Colunas que NÃO são features, com o motivo de cada uma. Fonte única do projeto:
+# qualquer coluna que não esteja aqui é tratada como feature por colunas_features().
+#   'id'       — identificador / metadado da linha
+#   'target'   — alvo de predição (medido dentro da curva)
+#   'in_curve' — geometria bruta medida dentro da curva (seria leakage como feature)
+#   'boundary' — medido na entrada da curva (leakage sob predição antecipada, lead_gap > 0)
+NAO_FEATURES: dict[str, str] = {
+    # identificadores
+    'id_route': 'id', 'id_trecho_curvo': 'id', 'time_inicio': 'id', 'time_fim': 'id',
+    # alvos de caracterização por curva
+    'manobra': 'target', 'manobra_combinado_curva': 'target',
+    'manobra_accel_curva': 'target', 'manobra_lateral_curva': 'target',
+    'manobra_ziguezague_curva': 'target',
+    # alvos de ISL (cinemático e baseado no sensor)
+    'isl_value': 'target', 'isl_mean': 'target', 'isl_max': 'target',
+    'isl_class': 'target', 'isl_alto': 'target',
+    'isl_sensor_max': 'target', 'isl_sensor_mean': 'target', 'isl_sensor_class': 'target',
+    # alvos de aceleração dentro da curva
+    'curve_accel_y_max': 'target', 'curve_accel_y_mean': 'target',
+    'curve_abs_accel_max': 'target', 'curve_abs_accel_mean': 'target',
+    # alvo de velocidade (ponto de pico do ISL na curva)
+    'v_critica': 'target',
+    # geometria bruta da curva atual (usar f4_* quando disponível)
+    'curve_raio_min': 'in_curve', 'curve_raio_mean': 'in_curve', 'curve_dnit_num': 'in_curve',
+}
+
+
+def colunas_features(df: pd.DataFrame) -> list[str]:
+    """Colunas de df que são features (todas as que não estão em NAO_FEATURES)."""
+    return [c for c in df.columns if c not in NAO_FEATURES]
+
 
 def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
     """Retorna estatísticas médias de variáveis-chave agrupadas por trajeto."""
@@ -165,7 +195,7 @@ def _features_dinamica(janela: pd.DataFrame) -> dict:
         janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
     )
 
-    _kamm_lim = 0.7 * 0.6 * _G
+    _kamm_lim = 0.7 * _MU_PADRAO * _G
     _accel_total = np.sqrt(janela['accel_x'].values**2 + janela['accel_y'].values**2)
     out['n_perigo_accel_janela']   = int((_accel_total > _kamm_lim).sum())
     out['n_perigo_lateral_janela'] = int((janela['accel_y'].abs() > 2.0).sum())
@@ -223,7 +253,7 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
         out['isl_mean']  = float(isl_vals.mean())
         out['isl_max']   = isl_max
         out['isl_class'] = classificar_isl(isl_max)
-        out['isl_alto']  = 1 if isl_max >= 0.8 else 0
+        out['isl_alto']  = 1 if isl_max >= ISL_ALTO else 0
         idx_max          = isl_vals.idxmax()
         out['v_critica'] = float(pts_curva.loc[idx_max, 'vehicle_speed'])  # km/h
     else:

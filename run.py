@@ -12,8 +12,9 @@ As flags escolhem O QUE prever. Cada uma escreve seus resultados em results/<alv
     python run.py --importancia        # importância das features
 
     python run.py --velocidade --rebuild   # ignora o cache e reprocessa
-    python run.py --isl --plot             # + gráficos
+    python run.py --isl --no-plot          # sem gráficos (mais rápido)
 
+Os gráficos são gerados por default; use --no-plot para pular.
 Sem nenhuma flag, mostra esta ajuda.
 """
 
@@ -21,7 +22,7 @@ import argparse
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import pandas as pd
@@ -33,16 +34,29 @@ from curvant.pipeline import (
     etapa_importancia_features, etapa_baseline_fisico, etapa_pytorch,
 )
 from curvant.utils.config import carregar_config
-from curvant.utils.preprocessing import main as preprocess_data
 
 _FLAGS_ACAO = ('risco', 'isl', 'velocidade', 'aceleracao', 'multitarefa', 'importancia')
 
 _CACHE_ANALYSIS = 'data/.cache_df_analysis.parquet'
 _CACHE_FEATURES = 'data/.cache_features_df.parquet'
 
-def preprocessar_dados(args: argparse.Namespace) -> None:
-    """Executa o script de pré-processamento de dados."""
-    preprocess_data(args)
+# Arquivos brutos (sem _clean) para o --preprocessar, do principal para o menor
+_RAW_CANDIDATOS = [
+    'data/eletro_rjdf_serra_rjmgba_janeiro.parquet',
+    'data/eletro_rjdf_serra.parquet',
+]
+
+
+def _input_bruto() -> str:
+    """Primeiro arquivo bruto existente (maior/principal primeiro)."""
+    caminho = next((p for p in _RAW_CANDIDATOS if os.path.exists(p)), None)
+    if caminho is None:
+        raise FileNotFoundError(
+            "Nenhum arquivo bruto encontrado em data/. Esperado um de: "
+            + ', '.join(_RAW_CANDIDATOS)
+        )
+    return caminho
+
 
 def _cache_valido(cache_path: str, data_path: str) -> bool:
     """True se o cache existe e é mais recente que o arquivo de dados."""
@@ -106,44 +120,51 @@ def _carregar_features(cfg: dict, rebuild: bool, plot: bool):
 
 
 def main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    if not any(getattr(args, f) for f in _FLAGS_ACAO):
+    acoes = any(getattr(args, f) for f in _FLAGS_ACAO)
+    if not acoes and not args.preprocessar:
         parser.print_help()
         return
 
+    if args.preprocessar:
+        from curvant.utils.preprocessing import executar_preprocessamento
+        in_path = args.input or _input_bruto()
+        print(f"[preprocessar] Limpando dados brutos: {in_path}")
+        executar_preprocessamento(in_path, args.output)
+        if not acoes:
+            return
+
+    plot = not args.no_plot   # plota por default; --no-plot pula os gráficos
     cfg = carregar_config()
-    df_analysis, features_df = _carregar_features(cfg, args.rebuild, args.plot)
+    df_analysis, features_df = _carregar_features(cfg, args.rebuild, plot)
 
     if args.risco:
         print("\n[risco] Classificação Segura/Risco...")
         if args.otimizar:
-            etapa_ml_otimizado(features_df, cfg, args.plot)
+            etapa_ml_otimizado(features_df, cfg, plot)
         else:
-            etapa_ml_classico(features_df, cfg, args.plot)
+            etapa_ml_classico(features_df, cfg, plot)
 
     if args.isl:
         print("\n[isl] Baseline físico (Monte Carlo / fórmula ISL)...")
         etapa_baseline_fisico(features_df, cfg)
         print("\n[isl] Classificação do ISL (3 classes)...")
-        etapa_isl_modelo(features_df, cfg, args.plot)
+        etapa_isl_modelo(features_df, cfg, plot)
 
     if args.aceleracao:
         print("\n[aceleracao] Regressão das acelerações na curva...")
-        etapa_accel_regressao(features_df, cfg, args.plot)
+        etapa_accel_regressao(features_df, cfg, plot)
 
     if args.velocidade:
         print("\n[velocidade] Previsão da velocidade crítica (v_critica)...")
-        etapa_regressao_ts(df_analysis, features_df, cfg, args.plot)
+        etapa_regressao_ts(df_analysis, features_df, cfg, plot)
 
     if args.multitarefa:
         print("\n[multitarefa] MLP multi-tarefa PyTorch...")
-        etapa_pytorch(features_df, cfg)
+        etapa_pytorch(features_df, cfg, plot)
 
     if args.importancia:
         print("\n[importancia] Importância das features (XGBoost)...")
         etapa_importancia_features(features_df, cfg)
-
-    if args.preprocessar:
-        preprocessar_dados(args)
 
     print("\nConcluído.")
 
@@ -163,8 +184,10 @@ if __name__ == '__main__':
     parser.add_argument('--importancia', action='store_true', help='Importância das features (XGBoost)')
     # Modificadores e utilidades
     parser.add_argument('--otimizar',    action='store_true', help='Aplica Optuna ao --risco')
-    parser.add_argument('--plot',        action='store_true', help='Gera gráficos')
+    parser.add_argument('--no-plot',     action='store_true', help='Não gera os gráficos (mais rápido)')
     parser.add_argument('--rebuild',     action='store_true', help='Ignora o cache e reprocessa as etapas 1-5')
     # Pré-processamento
-    parser.add_argument('--preprocessar', action='store_true', help='Executa o script de pré-processamento de dados')
+    parser.add_argument('--preprocessar', action='store_true', help='Limpa os dados brutos (auto-detecta o arquivo principal)')
+    parser.add_argument('--input',  type=str, default=None, help='Arquivo bruto a limpar (padrão: auto-detecta); usado com --preprocessar')
+    parser.add_argument('--output', type=str, default=None, help='Arquivo de saída limpo (padrão: <input>_clean.parquet); usado com --preprocessar')
     main(parser.parse_args(), parser)

@@ -30,47 +30,11 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn import svm
 from xgboost import XGBClassifier, XGBRegressor
 
-#
-# Cada coluna listada aqui recebe uma tag de proveniência explicando por que ela
-# não pode entrar na matriz de features. Uma coluna só vira feature se NÃO estiver
-# neste dicionário. Use colunas_features(df) para obter a lista de features.
-#
-# Tags:
-#   'id'       — identificadores / metadados temporais
-#   'target'   — alvos de predição (medidos dentro da curva)
-#   'in_curve' — geometria/medições brutas dentro da curva (leakage como feature)
-#   'boundary' — medido NA entrada da curva; sob predição antecipada (lead_gap > 0)
-#                isso está depois da fronteira de decisão -> leakage como feature
-_PROVENIENCIA: dict[str, str] = {
-    # identificadores
-    'id_route': 'id', 'id_trecho_curvo': 'id', 'time_inicio': 'id', 'time_fim': 'id',
-    # targets de caracterização por curva
-    'manobra': 'target', 'manobra_combinado_curva': 'target',
-    'manobra_accel_curva': 'target', 'manobra_lateral_curva': 'target',
-    'manobra_ziguezague_curva': 'target',
-    # targets ISL — cinemático (v²/Rgμ) e baseado no sensor (|accel_y|/gμ)
-    'isl_value': 'target', 'isl_mean': 'target', 'isl_max': 'target',
-    'isl_class': 'target', 'isl_alto': 'target',
-    'isl_sensor_max': 'target', 'isl_sensor_mean': 'target', 'isl_sensor_class': 'target',
-    # targets de aceleração dentro da curva
-    'curve_accel_y_max': 'target', 'curve_accel_y_mean': 'target',
-    'curve_abs_accel_max': 'target', 'curve_abs_accel_mean': 'target',
-    # target de velocidade (ponto de pico do ISL na curva)
-    'v_critica': 'target',
-    # geometria bruta da curva atual (usar f4_* quando disponível)
-    'curve_raio_min': 'in_curve', 'curve_raio_mean': 'in_curve', 'curve_dnit_num': 'in_curve',
-}
-
-# Alias retrocompatível: vários módulos importam _COLS_EXCLUIR.
-_COLS_EXCLUIR = list(_PROVENIENCIA)
+from curvant.constants import G as _G, MU as _MU
+from curvant.driving.features import colunas_features
 
 
-def colunas_features(df: pd.DataFrame) -> list[str]:
-    """Colunas de df que são features válidas (não estão no manifesto de proveniência)."""
-    return [c for c in df.columns if c not in _PROVENIENCIA]
-
-
-# Utilitários internos 
+# Utilitários internos
 
 def _base_route(id_route: str) -> str:
     """Remove sufixo _p<N> gerado pelo splittar_por_gaps, retornando o ID original da gravação."""
@@ -138,7 +102,7 @@ def _split_rota_generico(
     random_state: int = 42,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Split por base-route com feature_cols explícito (não deriva de _COLS_EXCLUIR).
+    Split por base-route com feature_cols explícito (não deriva de NAO_FEATURES).
 
     Usado por ISL e regressão, cujos alvos (ex.: _isl_y, curve_*) exigem
     controle fino sobre quais colunas são features. Garante que nenhuma rota
@@ -561,8 +525,6 @@ def aplicar_modelos_ml_otimizados(
 
 # ISL - Índice de Segurança Lateral
 
-_COLS_EXCLUIR_ISL = _COLS_EXCLUIR  # isl_mean/max/class/alto já estão em _COLS_EXCLUIR
-
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
 _ISL_LABELS = ['Baixo', 'Médio', 'Alto']
 
@@ -703,7 +665,6 @@ def avaliar_baseline_fisico(
     - isl_class : predição = argmax(mc_p_baixo, mc_p_medio, mc_p_alto)  [Monte Carlo]
     - isl_max   : ISL_phys = (v_pred_kinematica/3.6)² / (f4_raio_min · g · μ)
     """
-    _G, _MU = 9.81, 0.6
     mc_cols = ['mc_p_baixo', 'mc_p_medio', 'mc_p_alto']
 
     def _test_mask(d: pd.DataFrame) -> pd.Series:

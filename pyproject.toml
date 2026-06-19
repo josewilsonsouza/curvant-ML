@@ -1,6 +1,10 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "curvant-ml"
-version = "0.0.0.a1"
+version = "1.0.0.1"
 description = "ML framework for predicting risky driving behavior on road curves using vehicular sensor data"
 requires-python = ">=3.10"
 
@@ -21,14 +25,6 @@ dependencies = [
     # heavy ML backends moved to optional-dependencies (see below)
 ]
 
-[project.optional-dependencies]
-dev = ["jupyter", "ipykernel", "nbformat"]
-ml-backends = ["torch>=2.0", "tensorflow"]
-
-[build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["curvant*", "app*"]
+# [tool.setuptools.packages.find]
+# where = ["."]
+# include = ["curvant*", "app*"]
