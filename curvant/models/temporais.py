@@ -702,7 +702,7 @@ def treinar_regressao_ts(
     df_analysis: pd.DataFrame,
     features_df: pd.DataFrame,
     cfg: dict,
-    plot: bool = False,
+    plot: bool = True,
     outdir: str = 'results',
 ) -> None:
     """

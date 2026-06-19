@@ -10,6 +10,16 @@ Outro conceito importante é:
 
 - **Janela pré-curva:** é o trecho do percurso **antes** da curva. Todas as features saem daí, porque a previsão é feita antes de chegar na curva. A janela termina um pouco antes da  entrada (uma folga, o `lead_gap`, hoje 30 m), simulando um sistema que avisa o motorista com antecedência.
 
+**Não confundir as três "janelas" do projeto.** Têm finalidades diferentes:
+
+| Parâmetro | Onde (config) | Para quê | Unidade (default) |
+|---|---|---|---|
+| `janela_aproximacao` | `risk_measures` | monta o **rótulo** Segura/Risco: ao avaliar os 3 critérios de risco, inclui os segundos de aproximação antes da curva **mais** os pontos da curva | segundos (5) |
+| `lead_gap` | `features` | folga de antecipação: a janela de **features** termina `lead_gap` metros **antes** da entrada da curva | metros (30) |
+| `janela_distancia` | `features` | **tamanho** da janela de features pré-curva | metros (50) |
+
+Diferença-chave: `janela_aproximacao` é para o **target** (o que queremos prever, que naturalmente inclui a manobra de entrada na curva), enquanto `lead_gap` e `janela_distancia` são para as **features** (que ficam só *antes* da curva, para a predição ser antecipada). Por isso o rótulo pode "olhar" a entrada da curva, mas as features não.
+
 ## 1. O que cada comando prevê
 
 Cada flag do `run.py` treina um alvo diferente (sem flag, mostra a ajuda):

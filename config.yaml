@@ -30,15 +30,15 @@ curve_detection:
   sigma: 2           # suavização gaussiana sobre a curvatura
   sigma_gps: 0.0     # 0 = spline interpoladora (padrão). >0 = suavizadora (splprep, s=n·σ²).
                      # Mantido em 0: a suavizadora foi testada e reprovada por reescrever
-                     # ~20% dos rótulos de curva (sem ground truth para justificar).
+                     # ~20% dos rótulos de curva.
   limite_raio: 150   # m - raio máximo para marcar curva=True
   raio_min: 5.0      # m - clip do raio antes do ISL; evita ISL -> inf por ruído de GPS
   # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010); D = 1145.92/R
   dnit:
-    muito_fechada: 50    # R ≤ 50 m
-    fechada:      100    # R ≤ 100 m
-    media:        200    # R ≤ 200 m
-    aberta:       500    # R ≤ 500 m
+    muito_fechada: 50    # R <= 50 m
+    fechada:      100    # R <= 100 m
+    media:        200    # R <= 200 m
+    aberta:       500    # R <= 500 m
     # suave: R > 500 m
 
 # Caracterização de risco por janela: produz os rótulos de manobra (Segura/Risco).
@@ -62,7 +62,7 @@ features:
   janela_distancia_max: 200    # m - tamanho máximo da janela dinâmica
   lead_gap: 30                 # m - folga antes da entrada (predição antecipada): a janela
                                # termina em (entrada - lead_gap). 0 = sem folga.
-  vars_sensor:                 # sensores usados nas estatísticas do Grupo 1
+  vars_sensor:                 # sensores usados nas estatísticas do Grupo 1 (veja docs/TARGETES_E_FEATURES.md)
     - vehicle_speed
     - accel_x
     - accel_y
@@ -72,7 +72,7 @@ features:
 # Produz mc_p_baixo / mc_p_medio / mc_p_alto (probabilidade de cada classe de ISL).
 montecarlo:
   n_sim: 1000        # cenários por curva
-  k_ultimos: 10      # últimos pontos da janela usados p/ a tendência de velocidade
+  k_ultimos: 20      # últimos pontos da janela usados p/ a tendência de velocidade
   sigma_min: 0.5     # desvio mínimo em km/h (incerteza do sensor)
 
 
@@ -112,6 +112,7 @@ temporais:
   # Recomendado p/ eficiência: [linear, rf, xgboost, lstm] (tabulares + 1 temporal).
   model: [mlp, lstm, gru, cnn1d, linear, xgboost]
   task: auto                   # auto (detecta pelo target) | regression | classification
+
   target: v_critica            # v_critica | curve_accel_y_max | isl_max | ... | isl_class (classif.)
   sensors:
     - vehicle_speed
@@ -133,6 +134,7 @@ temporais:
     - mc_p_alto
     - prop_perigosas_antes     # F5 - contexto das curvas anteriores
     - n_curvas_antes
+
   target_cap_percentil: 99     # remove extremos clipados do target (null = sem filtro)
   n_timesteps: 50              # comprimento fixo após reamostragem da janela
   epochs: 400

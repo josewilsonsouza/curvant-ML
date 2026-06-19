@@ -24,7 +24,7 @@ python run.py --preprocessar
 Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. Assim, cada `flag` a seguir escolhe o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, o `run.py` mostra a ajuda.
 
 ```powershell
-python run.py --risco          # classifica a curva em Segura/Risco
+python run.py --risco          # classifica a condução na curva em Segura/Risco
 python run.py --risco --otimizar   # + ajuste de hiperparâmetros (Optuna)
 python run.py --isl            # classifica o ISL (3 classes) + baseline físico
 python run.py --velocidade     # prevê a velocidade crítica e deriva o ISL
@@ -51,7 +51,7 @@ As flags acima preveem o seguinte
 
 > **Direção atual do projeto:** o caminho mais promissor é o `--velocidade`: prever a velocidade crítica e calcular o ISL pela física. É onde o modelo supera de fato um chute simples (o erro cai de ~11 para ~7 km/h sobre o baseline de persistência).
 
-A lista completa de alvos e das 49 features (agrupadas em F1–F5 + Monte Carlo), com o que cada coluna significa, está em **[docs/TARGETS_E_FEATURES.md](docs/TARGETS_E_FEATURES.md)**.
+A lista completa de alvos e das 49 features (agrupadas em F1–F5 + Monte Carlo), com o que cada coluna significa, está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**.
 
 Veja na imagem a seguir o fluxo de exeução das flags e os targets.
 
@@ -103,11 +103,11 @@ Para cada segmento contíguo de `curva=True`, três critérios independentes ger
 
 | Critério | Coluna | Definição |
 |---|---|---|
-| Limite de aderência (Kamm) | `manobra_accel_curva` | `max √(aₓ²+a_y²) > α·μ·g` |
-| Aceleração lateral | `manobra_lateral_curva` | `max \|a_y\| > 2.0` e curva DNIT ≥ média |
-| Zigue-zague | `manobra_ziguezague_curva` | ≥ 3 mudanças de bearing alternadas com aceleração centrípeta |
+| Limite de aderência (Kamm) | `manobra_accel_curva` | $\max_t \sqrt{a_x^2 + a_y^2} > \alpha\,\mu\,g$ |
+| Aceleração lateral | `manobra_lateral_curva` | $\max_t \lvert a_y \rvert > 2{,}0$ e curva DNIT $\ge$ aberta |
+| Zigue-zague | `manobra_ziguezague_curva` | $\ge 3$ mudanças de bearing alternadas com aceleração centrípeta |
 
-`manobra_combinado_curva` é o OR dos três — o alvo padrão do `--risco`.
+`manobra_combinado_curva` é o OR dos três. Detalhes desses critérios estão em [RISK_MEASURES](docs/RISK_MEASURES.md).
 
 ## Modelos
 
@@ -142,7 +142,7 @@ As constantes físicas (`g`, `μ`, limiares de ISL) ficam centralizadas em
 
 Dataset público no HuggingFace: [`jwsouza13/routes_ML_inmetro`](https://huggingface.co/datasets/jwsouza13/routes_ML_inmetro). Os dados foram coletados pela equipe Lainf do Inmetro.
 
-| Conjunto | Veículo | Trecho | `loc_coleta` |
+| Conjunto | Veículo | Trecho | Local |
 |---|---|---|---|
 | ELETRONUCLEAR | Spin / Van | Rio de Janeiro | `eletronuclear` |
 | RJ-DF | Nivus | Rio de Janeiro -> Brasília | `rjdf` |

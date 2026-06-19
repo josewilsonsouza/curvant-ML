@@ -1,5 +1,5 @@
 """
-CurvantML — Pipeline de Experimentos
+CurvantML Experimentos
 
 As flags escolhem O QUE prever. Cada uma escreve seus resultados em results/<alvo>/.
 
@@ -14,7 +14,7 @@ As flags escolhem O QUE prever. Cada uma escreve seus resultados em results/<alv
     python run.py --velocidade --rebuild   # ignora o cache e reprocessa
     python run.py --isl --no-plot          # sem gráficos (mais rápido)
 
-Os gráficos são gerados por default; use --no-plot para pular.
+Os gráficos são gerados por default (em results/<alvo>/); use --no-plot para pular.
 Sem nenhuma flag, mostra esta ajuda.
 """
 
@@ -65,8 +65,12 @@ def _cache_valido(cache_path: str, data_path: str) -> bool:
     return os.path.getmtime(cache_path) >= os.path.getmtime(data_path)
 
 
-def _carregar_features(cfg: dict, rebuild: bool, plot: bool):
-    """Carrega features do cache ou reconstrói o pipeline (etapas 1-5)."""
+def _carregar_features(cfg: dict, rebuild: bool, mostrar_risco: bool = False):
+    """Carrega features do cache ou reconstrói o pipeline (etapas 1-5).
+
+    mostrar_risco: imprime as contagens de manobra/risco na preparação (só faz
+    sentido com --risco; nas outras flags elas só poluem a saída).
+    """
     candidates = [
         ('data/eletro_rjdf_serra_rjmgba_janeiro_clean.parquet', True),
         ('data/eletro_rjdf_serra_clean.parquet',                True),
@@ -107,11 +111,11 @@ def _carregar_features(cfg: dict, rebuild: bool, plot: bool):
     dfs_curves['ctp_accel'] = (dfs_curves['vehicle_speed'] / 3.6) ** 2 / raio_clipado
     dfs_curves['abs_accel'] = np.sqrt(dfs_curves['accel_x'] ** 2 + dfs_curves['accel_y'] ** 2)
 
-    print("\n[4/5] Analisando risco na condução...")
-    df_analysis = etapa_analise_conducao(dfs_curves, cfg, plot)
+    print("\n[4/5] Caracterizando a condução...")
+    df_analysis = etapa_analise_conducao(dfs_curves, cfg, mostrar_risco=mostrar_risco)
 
     print("\n[5/5] Identificando trechos curvos e extraindo features...")
-    features_df = etapa_features(df_analysis, cfg)
+    features_df = etapa_features(df_analysis, cfg, mostrar_risco=mostrar_risco)
 
     df_analysis.to_parquet(_CACHE_ANALYSIS, index=False)
     features_df.to_parquet(_CACHE_FEATURES, index=False)
@@ -135,7 +139,7 @@ def main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
     plot = not args.no_plot   # plota por default; --no-plot pula os gráficos
     cfg = carregar_config()
-    df_analysis, features_df = _carregar_features(cfg, args.rebuild, plot)
+    df_analysis, features_df = _carregar_features(cfg, args.rebuild, mostrar_risco=args.risco)
 
     if args.risco:
         print("\n[risco] Classificação Segura/Risco...")
@@ -171,7 +175,7 @@ def main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='CurvantML — escolha o que prever com uma flag de alvo.',
+        description='CurvantML - escolha o que prever com uma flag de target.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )

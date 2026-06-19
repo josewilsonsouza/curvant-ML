@@ -42,7 +42,7 @@ def etapa_curvas(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     return dfs_curves
 
 
-def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:
+def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, mostrar_risco: bool = True) -> pd.DataFrame:
     """Etapa 4: classifica janelas com a taxonomia explícita de risco."""
     da = cfg['risk_measures']
 
@@ -63,18 +63,19 @@ def etapa_analise_conducao(dfs_curves: pd.DataFrame, cfg: dict, plot: bool) -> p
 
     df_analysis = pd.concat(partes, ignore_index=True)
 
-    n_perigosa = df_analysis['manobra_combinado'].sum()
-    n_segura   = (~df_analysis['manobra_combinado']).sum()
-    n_accel    = df_analysis['manobra_accel'].sum()
-    n_lateral  = df_analysis['manobra_lateral'].sum()
-    n_zz       = df_analysis['manobra_ziguezague'].sum()
-    print(f"  Janelas — Risco: {n_perigosa} | Segura: {n_segura}")
-    print(f"  Critérios — Accel: {n_accel} | Lateral: {n_lateral} | ZZ: {n_zz}")
+    if mostrar_risco:
+        n_perigosa = df_analysis['manobra_combinado'].sum()
+        n_segura   = (~df_analysis['manobra_combinado']).sum()
+        n_accel    = df_analysis['manobra_accel'].sum()
+        n_lateral  = df_analysis['manobra_lateral'].sum()
+        n_zz       = df_analysis['manobra_ziguezague'].sum()
+        print(f"  Janelas — Risco: {n_perigosa} | Segura: {n_segura}")
+        print(f"  Critérios — Accel: {n_accel} | Lateral: {n_lateral} | ZZ: {n_zz}")
 
     return df_analysis
 
 
-def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+def etapa_features(df_analysis: pd.DataFrame, cfg: dict, mostrar_risco: bool = True) -> pd.DataFrame:
     """
     Etapas 5-6: extrai features e alvos por curva.
 
@@ -97,9 +98,12 @@ def etapa_features(df_analysis: pd.DataFrame, cfg: dict) -> pd.DataFrame:
         lead_gap=ft.get('lead_gap', 0.0),
     )
 
-    n_perigosa = features_df['manobra_combinado_curva'].sum()
-    n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
-    print(f"  {len(features_df)} amostras — Risco: {n_perigosa} | Segura: {n_segura}")
+    if mostrar_risco:
+        n_perigosa = features_df['manobra_combinado_curva'].sum()
+        n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
+        print(f"  {len(features_df)} amostras — Risco: {n_perigosa} | Segura: {n_segura}")
+    else:
+        print(f"  {len(features_df)} amostras (curvas)")
 
     mc_cfg = cfg.get('montecarlo', {})
     rnd    = cfg.get('ml', {}).get('random_state', 42)
@@ -244,7 +248,7 @@ def etapa_regressao_ts(df_analysis: pd.DataFrame, features_df: pd.DataFrame, cfg
     treinar_regressao_ts(df_analysis, features_df, cfg, plot=plot, outdir=_DIR_VELOCIDADE)
 
 
-def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
+def etapa_pytorch(features_df: pd.DataFrame, cfg: dict, plot: bool = True) -> None:
     """Treina o MLP multi-tarefa PyTorch com split por id_route."""
     from curvant.models import treinar_multitask_mlp
 
@@ -260,6 +264,7 @@ def etapa_pytorch(features_df: pd.DataFrame, cfg: dict) -> None:
         test_size=cfg['ml']['test_size'],
         random_state=cfg['ml']['random_state'],
         outdir=_DIR_MULTITAREFA,
+        plot=plot,
     )
 
 

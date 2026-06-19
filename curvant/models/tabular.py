@@ -198,7 +198,7 @@ def _preproc_train_test(
 
 def aplicar_modelos_ml(
     df: pd.DataFrame,
-    plot_cm: bool = False,
+    plot_cm: bool = True,
     random_state: int = 42,
     test_size: float = 0.3,
     cv_folds: int = 5,
@@ -419,7 +419,7 @@ def _optuna_lr(
 
 def aplicar_modelos_ml_otimizados(
     df: pd.DataFrame,
-    plot_cm: bool = False,
+    plot_cm: bool = True,
     random_state: int = 42,
     test_size: float = 0.3,
     cv_folds: int = 5,
@@ -531,7 +531,7 @@ _ISL_LABELS = ['Baixo', 'Médio', 'Alto']
 
 def treinar_modelo_isl(
     df: pd.DataFrame,
-    plot_cm: bool = False,
+    plot_cm: bool = True,
     random_state: int = 42,
     test_size: float = 0.3,
     cv_folds: int = 5,
@@ -767,7 +767,7 @@ def plotar_scatter_regressao(
 def treinar_regressao(
     df: pd.DataFrame,
     target: str,
-    plot: bool = False,
+    plot: bool = True,
     random_state: int = 42,
     test_size: float = 0.3,
     cv_folds: int = 5,
