@@ -34,20 +34,27 @@ Agora execute a limpeza dos dados definida pelo framework, executando
 python run.py --preprocessar
 ```
 
-Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. Assim, cada `flag` a seguir escolhe o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, o `run.py` mostra a ajuda.
+Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de **predição** abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, o `run.py` mostra a ajuda.
 
 ```powershell
+# Predição — cada flag escolhe um alvo
 python run.py --risco          # classifica a condução na curva em Segura/Risco
-python run.py --risco --otimizar   # + ajuste de hiperparâmetros (Optuna)
 python run.py --isl            # classifica o ISL (3 classes) + baseline físico
 python run.py --velocidade     # prevê a velocidade crítica e deriva o ISL
 python run.py --aceleracao     # regressão das acelerações dentro da curva
 python run.py --multitarefa    # MLP PyTorch: ISL + manobras juntos
-python run.py --importancia    # importância das features (XGBoost)
+```
 
-# Utilidades (combináveis)
-python run.py --isl --plot         # + gráficos (matrizes de confusão, scatter)
+Os comandos abaixo **não** são predição: um inspeciona o modelo e os outros são modificadores/utilidades, combináveis com as flags de predição.
+
+```powershell
+# Análise (não prevê, inspeciona)
+python run.py --importancia            # importância das features (XGBoost)
+
+# Modificadores e utilidades (combináveis com as flags de predição)
+python run.py --risco --otimizar       # + ajuste de hiperparâmetros (Optuna)
 python run.py --velocidade --rebuild   # ignora o cache e reprocessa as etapas 1–5
+python run.py --isl --no-plot          # pula os gráficos (mais rápido)
 ```
 
 > **📝Nota**. Use `--rebuild` ao mudar parâmetros do `config.yaml` que afetam detecção ou extração de features.
@@ -88,7 +95,7 @@ graph LR
     H & I & J & K & L --> M[(results/< alvo >/)]
 
     %% Modificadores
-    N[[Flags Utilitárias]] -.->|--otimizar<br/>--plot<br/>--rebuild| G
+    N[[Flags Utilitárias]] -.->|--otimizar<br/>--no-plot<br/>--rebuild| G
 ```
 
 ## Pipeline
