@@ -52,6 +52,7 @@ except ImportError:
     _HAS_XGB = False
 
 from curvant.constants import G as _G_TS, MU as _MU_TS, ISL_BAIXO, ISL_ALTO
+from curvant.driving.features import colunas_features
 from curvant.models.tabular import _base_route
 
 _SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
@@ -734,7 +735,7 @@ def treinar_regressao_ts(
     kernel     = int(ts_cfg.get('kernel_size', 3))
     test_size  = float(cfg.get('ml', {}).get('test_size', 0.3))
     rnd        = int(cfg.get('ml', {}).get('random_state', 42))
-    scalares_cfg = ts_cfg.get('scalares_extras', [])
+    scalares_cfg = ts_cfg.get('scalares_extras') or []
     patience     = int(ts_cfg.get('early_stopping_patience', 40))
     val_size_nn  = float(ts_cfg.get('val_size', 0.15))
     weight_decay = float(ts_cfg.get('weight_decay', 0.01))
@@ -755,7 +756,8 @@ def treinar_regressao_ts(
         features_df  = ft
 
     scalares_todos = list(dict.fromkeys(scalares_cfg + [prev_col]))
-    disponiveis    = [c for c in scalares_todos if c in features_df.columns]
+    cols_validas   = set(colunas_features(features_df))
+    disponiveis    = [c for c in scalares_todos if c in cols_validas]
     print(f"  Canais escalares extras: {disponiveis}")
 
     X, y, rotas, n_seq_sensor = extrair_sequencias_precurva(

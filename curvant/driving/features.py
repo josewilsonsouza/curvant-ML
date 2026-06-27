@@ -3,6 +3,7 @@ import pandas as pd
 
 from curvant.constants import G as _G, MU as _MU_PADRAO, ISL_ALTO
 from curvant.driving.isl import classificar_isl
+from curvant.driving.risk_measures import calcular_bearing as _calcular_bearing_gps
 
 # Encoding numérico da classe DNIT para feature prev_dnit_num
 _DNIT_NUM = {'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4}
@@ -34,9 +35,24 @@ NAO_FEATURES: dict[str, str] = {
 }
 
 
-def colunas_features(df: pd.DataFrame) -> list[str]:
-    """Colunas de df que são features (todas as que não estão em NAO_FEATURES)."""
-    return [c for c in df.columns if c not in NAO_FEATURES]
+_FEATURES_DESATIVADAS: list[str] = []
+
+
+def configurar_features_desativadas(lista: list[str] | None) -> None:
+    """Define globalmente quais features estão desativadas (lida de config.features.desativar)."""
+    global _FEATURES_DESATIVADAS
+    _FEATURES_DESATIVADAS = list(lista or [])
+
+
+def colunas_features(df: pd.DataFrame, desativar: list[str] | None = None) -> list[str]:
+    """Colunas de df que são features (todas as que não estão em NAO_FEATURES).
+
+    desativar: sobrescreve a lista global para esta chamada específica.
+    A lista global é configurada via configurar_features_desativadas() a partir de
+    config.features.desativar, então os callers existentes não precisam mudar.
+    """
+    excluir = set(NAO_FEATURES) | set(desativar if desativar is not None else _FEATURES_DESATIVADAS)
+    return [c for c in df.columns if c not in excluir]
 
 
 def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
@@ -172,11 +188,59 @@ def _features_sensores(janela: pd.DataFrame, vars_sensor: list) -> dict:
     return out
 
 
+def _features_bearing_janela(janela: pd.DataFrame) -> dict:
+    """
+    Grupo 2 (bearing) — oscilação de direção na janela pré-curva.
+    Precursores diretos do critério de zigue-zague: variação de bearing e
+    contagem de alternâncias de direção na aproximação.
+    """
+    out = {
+        'janela_bearing_std':      0.0,
+        'janela_n_mudancas_dir':   0,
+        'janela_bearing_range':    0.0,
+    }
+
+    cols_ok = {'lat', 'lon', 'vehicle_speed'}.issubset(janela.columns)
+    if not cols_ok or len(janela) < 3:
+        return out
+
+    janela_mov = janela[janela['vehicle_speed'] >= 5.0].reset_index(drop=True)
+    if len(janela_mov) < 3:
+        return out
+
+    lats = janela_mov['lat'].tolist()
+    lons = janela_mov['lon'].tolist()
+    bearings = np.array([
+        _calcular_bearing_gps(lats[i - 1], lons[i - 1], lats[i], lons[i])
+        for i in range(1, len(lats))
+    ])
+
+    deltas = np.array([
+        (bearings[i] - bearings[i - 1] + 180) % 360 - 180
+        for i in range(1, len(bearings))
+    ])
+
+    out['janela_bearing_std']   = float(np.std(deltas)) if len(deltas) > 1 else 0.0
+    out['janela_bearing_range'] = float(np.ptp(bearings))
+
+    # mesma lógica de alternância do critério de zigue-zague (limiar 15°)
+    contador, ultimo_sinal = 0, 0
+    for d in deltas:
+        if abs(d) > 15.0:
+            sinal = int(np.sign(d))
+            if sinal != ultimo_sinal:
+                contador    += 1
+                ultimo_sinal = sinal
+    out['janela_n_mudancas_dir'] = contador
+
+    return out
+
+
 def _features_dinamica(janela: pd.DataFrame) -> dict:
     """
     Grupo 2 — dinâmica derivada da aproximação:
-    jerk (variação brusca da aceleração), comprimento da janela e contagem de
-    eventos onde a aceleração ultrapassa um limite ("sustos").
+    jerk (variação brusca da aceleração), comprimento da janela, contagem de
+    eventos onde a aceleração ultrapassa um limite e oscilação de direção (bearing).
     """
     out: dict = {}
 
@@ -198,7 +262,10 @@ def _features_dinamica(janela: pd.DataFrame) -> dict:
     _kamm_lim = 0.7 * _MU_PADRAO * _G
     _accel_total = np.sqrt(janela['accel_x'].values**2 + janela['accel_y'].values**2)
     out['n_perigo_accel_janela']   = int((_accel_total > _kamm_lim).sum())
+    out['janela_abs_accel_max']    = float(_accel_total.max())
     out['n_perigo_lateral_janela'] = int((janela['accel_y'].abs() > 2.0).sum())
+
+    out.update(_features_bearing_janela(janela))
 
     return out
 
@@ -332,12 +399,11 @@ def _adicionar_contexto(df_out: pd.DataFrame) -> pd.DataFrame:
         grupo = grupo.copy()
 
         grupo['n_curvas_antes'] = np.arange(len(grupo))
-        # n_perigosas_antes propaga ruído: um falso positivo precoce no trajeto
-        # inflaciona esta feature para todas as curvas seguintes da mesma rota.
-        grupo['n_perigosas_antes']    = grupo['manobra'].shift(1).fillna(0).cumsum().astype(int)
-        grupo['prop_perigosas_antes'] = (
-            grupo['n_perigosas_antes'] / grupo['n_curvas_antes'].replace(0, np.nan)
-        ).fillna(0.0).round(3)
+        # ISL acumulado das curvas anteriores — medido pelos sensores (v²/R·g·μ),
+        # disponível em tempo real sem depender do rótulo Segura/Risco do modelo.
+        isl_shifted = grupo['isl_max'].shift(1)
+        grupo['prev_isl_max']   = isl_shifted.fillna(0.0).round(3)
+        grupo['mean_isl_antes'] = isl_shifted.expanding().mean().fillna(0.0).round(3)
 
         grupo['prev_raio_min']  = grupo['curve_raio_min'].shift(1).fillna(raio_min_global)
         grupo['prev_raio_mean'] = grupo['curve_raio_mean'].shift(1).fillna(raio_mean_global)
@@ -352,7 +418,6 @@ def _adicionar_contexto(df_out: pd.DataFrame) -> pd.DataFrame:
 
 def extrair_features(
     data: pd.DataFrame,
-    janela_tempo: int = 15,
     janela_distancia: float | None = None,
     janela_acel_confort: float = 2.5,
     janela_distancia_min: float = 50.0,
@@ -383,6 +448,8 @@ def extrair_features(
 
     dados_janela = []
     for (id_route_atual, trecho_curvo), curva in df.groupby(['id_route', 'trecho_curvo']):
+        if trecho_curvo == 0:
+            continue
         if len(curva) <= 2:
             continue
 

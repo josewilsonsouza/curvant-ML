@@ -29,11 +29,12 @@ import pandas as pd
 
 from curvant.pipeline import (
     etapa_curvas, etapa_analise_conducao, etapa_features,
-    etapa_ml_classico, etapa_ml_otimizado,
+    etapa_ml_classico, etapa_ml_otimizado, etapa_criterios_separados,
     etapa_isl_modelo, etapa_accel_regressao, etapa_regressao_ts,
     etapa_importancia_features, etapa_baseline_fisico, etapa_pytorch,
 )
 from curvant.utils.config import carregar_config
+from curvant.driving.features import configurar_features_desativadas
 
 _FLAGS_ACAO = ('risco', 'isl', 'velocidade', 'aceleracao', 'multitarefa', 'importancia')
 
@@ -139,6 +140,7 @@ def main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
 
     plot = not args.no_plot   # plota por default; --no-plot pula os gráficos
     cfg = carregar_config()
+    configurar_features_desativadas(cfg["features"].get("desativar"))
     df_analysis, features_df = _carregar_features(cfg, args.rebuild, mostrar_risco=args.risco)
 
     if args.risco:
@@ -147,6 +149,8 @@ def main(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             etapa_ml_otimizado(features_df, cfg, plot)
         else:
             etapa_ml_classico(features_df, cfg, plot)
+        print("\n[risco] XGBoost por critério individual...")
+        etapa_criterios_separados(features_df, cfg)
 
     if args.isl:
         print("\n[isl] Baseline físico (Monte Carlo / fórmula ISL)...")

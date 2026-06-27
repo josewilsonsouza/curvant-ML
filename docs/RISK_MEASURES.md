@@ -86,15 +86,11 @@ O critério lateral exige `risco_dnit` $\ge 1$ (aberta ou mais fechada).
 
 | Parâmetro | Default | Efeito |
 |---|---|---|
-| `janela_aproximacao` | 5 s | segundos de aproximação incluídos na avaliação de cada curva |
 | `kamm_alpha` | 0.7 | fração $\alpha$ do limite de aderência no critério de Kamm |
 | `limiar_accel_lateral` | 2.0 m/s² | $\tau_{\text{lat}}$ do critério lateral |
 | `zigue_zague.limiar_bearing` | 15° | $\tau_\theta$ — mudança mínima de direção |
-| `zigue_zague.limiar_accel_lateral` | 0.3 m/s² | $\tau_{\text{lat,zz}}$ — aceleração centrípeta mínima |
+| `zigue_zague.limiar_ctp` | 0.3 m/s² | $\tau_{\text{ctp}}$ — aceleração centrípeta mínima (ctp_accel = v²/R) |
 | `zigue_zague.min_mudancas` | 3 | nº de alternâncias para caracterizar zigue-zague |
-| `janela_tempo` | 15 s | só usado no fluxo legado (sem coluna `curva`); sem efeito no atual |
-
-> Temos **dois** `limiar_accel_lateral`. O do nível `risk_measures` (2.0) é o limiar do critério lateral (Seção 3.2). O de dentro de `zigue_zague` (0.3) é bem menor e serve só ao critério de zigue-zague (Seção 3.3).
 
 Em geral: subir um limiar deixa o critério mais permissivo (menos curvas viram Risco); descer deixa mais sensível (mais curvas viram Risco).
 

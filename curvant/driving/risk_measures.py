@@ -102,7 +102,7 @@ def caracterizar_janela(
 def caracterizar_conducao(
     df: pd.DataFrame,
     janela_tempo: int = 15,
-    janela_aproximacao: int = 5,
+    janela_aproximacao: int = 0,
     kamm_alpha: float = 0.7,
     limiar_accel_lateral: float = 2.0,
     **zz_kwargs,

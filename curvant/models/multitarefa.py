@@ -8,8 +8,8 @@ MultiTaskMLP: encoder compartilhado (64 unidades) + cinco heads lineares:
   - manobra_ziguezague_curva  (binário, BCEWithLogitsLoss)
   - manobra_combinado_curva   (binário, BCEWithLogitsLoss)
 
-Regressão de série temporal (curve_accel_y_max) tratada separadamente
-em modelos_ts.py, que opera sobre dados brutos da janela pré-curva.
+Regressão de série temporal (v_critica sobre sequência bruta) tratada separadamente
+em temporais.py, que opera sobre dados brutos da janela pré-curva.
 """
 
 import os
@@ -241,6 +241,7 @@ def treinar_multitask_mlp(
             mae = mean_absolute_error(y, p)
             r2  = r2_score(y, p)
             print(f"    isl_max     MAE: {mae:.4f}  R²: {r2:.4f}")
+        if key == 'isl_max':
             # deriva isl_class a partir dos limiares e reporta F1-macro
             if 'isl_class' in df.columns:
                 y_cls  = df.loc[id_routes.map(_base_route).isin(test_base_set), 'isl_class'].map(_ISL_ENCODE).fillna(0).values
@@ -267,8 +268,11 @@ def treinar_multitask_mlp(
 
         else:
             pred_labels = (p > 0.0).astype(int)
-            f1 = f1_score(y.astype(int), pred_labels, average='weighted', zero_division=0)
-            print(f"    {key:<30s} F1: {f1:.4f}")
+            f1_bin  = f1_score(y.astype(int), pred_labels, average='binary',  zero_division=0)
+            f1_mac  = f1_score(y.astype(int), pred_labels, average='macro',   zero_division=0)
+            n_pos   = int(y.sum())
+            n_neg   = len(y) - n_pos
+            print(f"    {key:<30s} F1-bin: {f1_bin:.4f}  F1-macro: {f1_mac:.4f}  (pos={n_pos} neg={n_neg})")
             if plot:
                 cm = confusion_matrix(y.astype(int), pred_labels)
                 fig, ax = plt.subplots(figsize=(3, 3))
