@@ -20,7 +20,7 @@ Tarefa configurável via config.yaml > temporais > task:
     regression     — MSE / R² / MAE
     classification — CrossEntropy ou BCE / F1
 
-Targets de regressão:  curve_accel_y_max | curve_accel_y_mean | curve_abs_accel_max | isl_max | isl_mean
+Targets de regressão:  v_critica | isl_max | isl_mean
 Targets de classificação: manobra_combinado_curva | manobra_accel_curva |
                           manobra_lateral_curva | manobra_ziguezague_curva | isl_class
 """
@@ -132,7 +132,7 @@ def extrair_sequencias_precurva(
     features_df: pd.DataFrame,
     sensors: list[str],
     n_timesteps: int,
-    target: str = 'curve_accel_y_max',
+    target: str = 'v_critica',
     scalares_extras: list[str] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """
@@ -719,7 +719,7 @@ def treinar_regressao_ts(
     if invalidos:
         raise ValueError(f"Modelos desconhecidos: {invalidos}. Válidos: {sorted(_TODOS_TS)}")
 
-    target       = ts_cfg.get('target', 'curve_accel_y_max')
+    target       = ts_cfg.get('target', 'v_critica')
     task_cfg     = ts_cfg.get('task', 'auto')
     task, n_classes = _detectar_task(target, task_cfg)
 

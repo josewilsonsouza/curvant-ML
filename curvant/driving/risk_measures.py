@@ -101,8 +101,6 @@ def caracterizar_janela(
 
 def caracterizar_conducao(
     df: pd.DataFrame,
-    janela_tempo: int = 15,
-    janela_aproximacao: int = 0,
     kamm_alpha: float = 0.7,
     limiar_accel_lateral: float = 2.0,
     **zz_kwargs,
@@ -110,38 +108,12 @@ def caracterizar_conducao(
     """
     Caracteriza risco por segmento de curva (trecho contíguo curva=True).
 
-    Para cada segmento de curva, avalia os critérios sobre a janela de
-    aproximação (janela_aproximacao segundos antes) + os pontos do segmento.
+    Para cada segmento, avalia os três critérios sobre os pontos do segmento.
     Os rótulos são atribuídos apenas aos pontos do segmento; pontos fora de
     curvas recebem False/Segura.
-
-    Quando a coluna 'curva' não está disponível, cai em um fluxo legado de janelas
-    fixas de janela_tempo segundos.
     """
     _cols = ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']
 
-    if 'curva' not in df.columns:
-        # janelas fixas
-        resultados = []
-        t, fim, id_janela = df['time_sec'].min(), df['time_sec'].max(), 1
-        while t + janela_tempo <= fim:
-            janela = df[(df['time_sec'] >= t) & (df['time_sec'] < t + janela_tempo)]
-            if len(janela) >= 2:
-                r = caracterizar_janela(janela, kamm_alpha, limiar_accel_lateral, **zz_kwargs)
-                comb = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
-                janela = janela.copy()
-                for k in _cols[:3]:
-                    janela[k] = r[k]
-                janela['manobra_combinado'] = comb
-                janela['conducao']  = 'Perigosa' if comb else 'Segura'
-                janela['risco_dnit'] = r['risco_dnit']
-                janela['id_janela'] = id_janela
-                id_janela += 1
-                resultados.append(janela)
-            t += janela_tempo
-        return pd.concat(resultados, ignore_index=True) if resultados else pd.DataFrame()
-
-    # fluxo curva-ancorado
     df_out = df.sort_values('time_sec').copy()
     for col in _cols:
         df_out[col] = False
@@ -149,25 +121,17 @@ def caracterizar_conducao(
     df_out['risco_dnit'] = 0
     df_out['id_janela']  = 0
 
-    # identifica blocos contíguos de curva=True dentro do trajeto
     df_out['_bloco'] = (df_out['curva'] != df_out['curva'].shift()).cumsum()
 
     id_janela = 1
     for _, bloco in df_out.groupby('_bloco', sort=False):
         if not bool(bloco['curva'].iloc[0]):
-            continue  # pula trechos retos
-
-        t_inicio = bloco['time_sec'].min()
-        abordagem = df_out[
-            (df_out['time_sec'] >= t_inicio - janela_aproximacao)
-            & (df_out['time_sec'] < t_inicio)
-        ]
-        janela_avaliacao = pd.concat([abordagem, bloco]).sort_values('time_sec')
-
-        if len(janela_avaliacao) < 2:
             continue
 
-        r    = caracterizar_janela(janela_avaliacao, kamm_alpha, limiar_accel_lateral, **zz_kwargs)
+        if len(bloco) < 2:
+            continue
+
+        r    = caracterizar_janela(bloco, kamm_alpha, limiar_accel_lateral, **zz_kwargs)
         comb = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
 
         idx = bloco.index
@@ -185,14 +149,11 @@ def caracterizar_conducao(
 
 def caracterizar_todos_trajetos(
     dfs_curves: pd.DataFrame,
-    janela_tempo: int = 10,
     **kwargs,
 ) -> pd.DataFrame:
     """Aplica caracterizar_conducao em cada trajeto e concatena."""
-    # groupby em vez de query(f'... == "{traj}"'): robusto a caracteres especiais
-    # no id_route e mais rápido (não reescaneia o DataFrame a cada trajeto).
     partes = [
-        caracterizar_conducao(grupo, janela_tempo=janela_tempo, **kwargs)
+        caracterizar_conducao(grupo, **kwargs)
         for _, grupo in dfs_curves.groupby('id_route', sort=False)
     ]
     return pd.concat(partes, ignore_index=True) if partes else pd.DataFrame()

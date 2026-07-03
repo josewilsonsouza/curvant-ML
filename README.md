@@ -13,7 +13,7 @@
   </a>
 </p>
 
-Queremos prever, momentos antes de o motorista entrar numa curva, se ele realizará uma condução segura ou de risco, a partir de dados de sensores veiculares OBD Link. Todas as features saem de uma janela antes da curva, e a janela termina com uma folga (`lead_gap`, 30 m) da entrada.
+Queremos prever, momentos antes de o motorista entrar numa curva, se ele realizará uma condução segura ou de risco, a partir de dados de sensores veiculares OBD Link anteriores à curva.
 
 ## Instalação e execução
 Clone este repositório:
@@ -22,39 +22,38 @@ Clone este repositório:
 git clone https://github.com/josewilsonsouza/curvant-ml.git
 cd curvant-ml
 ```
-Então execute a instalação:
+Execute a instalação:
 
 ```powershell
 pip install -e .
 ```
 
-Agora execute a limpeza dos dados definida pelo framework, executando
+Agora execute a limpeza dos dados, executando
 
-```powershell
-python run.py --preprocessar
+```bash
+cvt --preprocess
 ```
 
-Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de **predição** abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, o `run.py` mostra a ajuda.
+Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de predição abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, `cvt` mostra a ajuda.
 
-```powershell
+```bash
 # Predição — cada flag escolhe um alvo
-python run.py --risco          # classifica a condução na curva em Segura/Risco
-python run.py --isl            # classifica o ISL (3 classes) + baseline físico
-python run.py --velocidade     # prevê a velocidade crítica e deriva o ISL
-python run.py --aceleracao     # regressão das acelerações dentro da curva
-python run.py --multitarefa    # MLP PyTorch: ISL + manobras juntos
+cvt --risk           # classifica a condução na curva em Segura/Risco
+cvt --isl            # classifica o ISL (3 classes) + baseline físico
+cvt --velocity       # prevê a velocidade crítica e deriva o ISL
+cvt --multitask      # MLP PyTorch: ISL + manobras juntos
 ```
 
 Os comandos abaixo **não** são predição: um inspeciona o modelo e os outros são modificadores/utilidades, combináveis com as flags de predição.
 
-```powershell
+```bash
 # Análise (não prevê, inspeciona)
-python run.py --importancia            # importância das features (XGBoost)
+cvt --importance             # importância das features (XGBoost)
 
 # Modificadores e utilidades (combináveis com as flags de predição)
-python run.py --risco --otimizar       # + ajuste de hiperparâmetros (Optuna)
-python run.py --velocidade --rebuild   # ignora o cache e reprocessa as etapas 1–5
-python run.py --isl --no-plot          # pula os gráficos (mais rápido)
+cvt --risk --optimize        # + ajuste de hiperparâmetros (Optuna)
+cvt --velocity --rebuild     # ignora o cache e reprocessa as etapas 1–5
+cvt --isl --no-plot          # pula os gráficos (mais rápido)
 ```
 
 > **📝Nota**. Use `--rebuild` ao mudar parâmetros do `config.yaml` que afetam detecção ou extração de features.
@@ -63,13 +62,12 @@ As flags acima preveem o seguinte
 
 | Flag | Alvo/Target | Tipo |
 |---|---|---|
-| `--risco` | curva Segura/Risco (`manobra_combinado_curva`) | binário |
+| `--risk` | curva Segura/Risco (`manobra_combinado_curva`) | binário |
 | `--isl` | classe de ISL (baixo/médio/alto) + baseline físico | 3 classes |
-| `--velocidade` | velocidade crítica `v_critica` (e ISL derivado pela física) | regressão |
-| `--aceleracao` | picos de aceleração dentro da curva | regressão |
-| `--multitarefa` | `isl_max` + as 4 manobras, num modelo só | regressão + binários |
+| `--velocity` | velocidade crítica `v_critica` (e ISL derivado pela física) | regressão |
+| `--multitask` | `isl_max` + as 4 manobras, num modelo só | regressão + binários |
 
-> **Direção atual do projeto:** o caminho mais promissor é o `--velocidade`: prever a velocidade crítica e calcular o ISL pela física. É onde o modelo supera de fato um chute simples (o erro cai de ~11 para ~7 km/h sobre o baseline de persistência).
+> **Direção atual do projeto:** o caminho mais promissor é o `--velocity`: prever a velocidade crítica e calcular o ISL pela física. É onde o modelo supera de fato um chute simples (o erro cai de ~11 para ~7 km/h sobre o baseline de persistência).
 
 A lista completa de alvos e das 49 features (agrupadas em F1–F5 + Monte Carlo), com o que cada coluna significa, está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**.
 
@@ -77,25 +75,24 @@ Veja na imagem a seguir o fluxo de exeução das flags e os targets.
 
 ```mermaid
 graph LR
-    A([run.py]) --> B{Modo de<br/>Execução}
+    A([cvt]) --> B{Modo de<br/>Execução}
 
     %% Preparação e Análise
-    B -->|Preparação| C[--preprocessar] --> D[(data/)]
-    B -->|Análise| E[--importancia] --> F[Feature Importance]
+    B -->|Preparação| C[--preprocess] --> D[(data/)]
+    B -->|Análise| E[--importance] --> F[Feature Importance]
 
     %% Modelagem Principal
     B -->|Modelagem| G((Alvos))
 
-    G -->|--risco| H[Classificação Binária<br/>Segura/Risco]
+    G -->|--risk| H[Classificação Binária<br/>Segura/Risco]
     G -->|--isl| I[Classificação Multiclasse<br/>Níveis de ISL]
-    G -->|--velocidade| J[Regressão Temporal<br/>v_critica]
-    G -->|--aceleracao| K[Regressão Tabular<br/>Picos na Curva]
-    G -->|--multitarefa| L[Rede Neural Multi-head<br/>ISL + 4 Manobras]
+    G -->|--velocity| J[Regressão Temporal<br/>v_critica]
+    G -->|--multitask| K[Rede Neural Multi-head<br/>ISL + 4 Manobras]
 
-    H & I & J & K & L --> M[(results/< alvo >/)]
+    H & I & J & K --> M[(results/< alvo >/)]
 
     %% Modificadores
-    N[[Flags Utilitárias]] -.->|--otimizar<br/>--no-plot<br/>--rebuild| G
+    N[[Flags Utilitárias]] -.->|--optimize<br/>--no-plot<br/>--rebuild| G
 ```
 
 ## Pipeline
@@ -114,8 +111,7 @@ graph LR
 
 ### Janela pré-curva
 
-As features saem de uma janela espacial logo antes da curva. O tamanho é fixo (`features.janela_distancia`, 50 m) ou dinâmico pela distância de frenagem de conforto `d = v̄²/(2·a_c)`, com clip em ` janela_distancia_min, janela_distancia_max]`. A janela termina `lead_gap` metros **antes** da entrada (predição antecipada) e exclui pontos de uma
-curva anterior.
+As features saem de uma janela espacial logo antes da curva. O tamanho é fixo (`features.janela_distancia`, 50 m) ou dinâmico pela distância de frenagem de conforto `d = v̄²/(2·a_c)`, com clip em ` janela_distancia_min, janela_distancia_max]`. A janela termina `lead_gap` metros **antes** da entrada (predição antecipada) e exclui pontos de uma curva anterior.
 
 ### Caracterização de risco (3 critérios)
 
@@ -131,12 +127,12 @@ Para cada segmento contíguo de `curva=True`, três critérios independentes ger
 
 ## Modelos
 
-- **Tabular** (`--risco`, `--isl`, `--aceleracao`): LogisticRegression, SVM, DecisionTree, RandomForest, XGBoost, MLP. Pipeline `SMOTE -> StandardScaler -> [PCA] -> modelo`, com split e  validação cruzada **por rota** (`GroupKFold`/`StratifiedGroupKFold`) para não vazar entre  gravações.
-- **Optuna** (`--risco --otimizar`): tuning bayesiano de XGBoost, RandomForest e LogReg.
-- **Temporais** (`--velocidade`): operam sobre a sequência bruta da janela pré-curva (não estatísticas). Modelos em `temporais.model`: `linear`, `rf`, `xgboost` (tabulares sobre estatísticas da sequência) e `mlp`, `lstm`, `gru`, `cnn1d` (neurais).
-- **Multitarefa** (`--multitarefa`): MLP PyTorch com um encoder compartilhado e 5 heads.
+- **Tabular** (`--risk`, `--isl`): LogisticRegression, SVM, DecisionTree, RandomForest, XGBoost, MLP. Pipeline `SMOTE -> StandardScaler -> [PCA] -> modelo`, com split e validação cruzada **por rota** (`GroupKFold`/`StratifiedGroupKFold`) para não vazar entre gravações.
+- **Optuna** (`--risk --optimize`): tuning bayesiano de XGBoost, RandomForest e LogReg.
+- **Temporais** (`--velocity`): operam sobre a sequência bruta da janela pré-curva (não estatísticas). Modelos em `temporais.model`: `linear`, `rf`, `xgboost` (tabulares sobre estatísticas da sequência) e `mlp`, `lstm`, `gru`, `cnn1d` (neurais).
+- **Multitask** (`--multitask`): MLP PyTorch com um encoder compartilhado e 5 heads.
 
-Sob `--isl` e `--velocidade`, o pipeline reporta um baseline sem aprendizado ao lado dos modelos — a simulação de Monte Carlo (argmax para `isl_class`) e a persistência (`v_critica` ~ velocidade de aproximação). Serve para medir o quanto o ML realmente agrega.
+Sob `--isl` e `--velocity`, o pipeline reporta um baseline sem aprendizado ao lado dos modelos — a simulação de Monte Carlo (argmax para `isl_class`) e a persistência (`v_critica` ~ velocidade de aproximação). Serve para medir o quanto o ML realmente agrega.
 
 ## Configuração (`config.yaml`)
 
@@ -153,10 +149,9 @@ Tudo num arquivo só, com cada seção correspondendo a um módulo. As principai
 | `ml` | parâmetros compartilhados dos modelos (split, CV, PCA, cap de outliers) |
 | `optuna` | nº de trials do tuning |
 | `multitarefa` | hiperparâmetros do MLP PyTorch |
-| `temporais` | modelos, alvo e hiperparâmetros do `--velocidade` |
+| `temporais` | modelos, alvo e hiperparâmetros do `--velocity` |
 
-As constantes físicas (`g`, `μ`, limiares de ISL) ficam centralizadas em
-[curvant/constants.py](curvant/constants.py), que lê `μ` e os limiares da seção `physics` do config.
+As constantes físicas (`g`, `μ`, limiares de ISL) ficam centralizadas em [curvant/constants.py](curvant/constants.py), que lê `μ` e os limiares da seção `physics` do config.
 
 ## Dados
 

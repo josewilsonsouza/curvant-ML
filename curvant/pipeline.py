@@ -1,5 +1,5 @@
 """
-CurvantML — Etapas do pipeline de experimentos.
+CurvantML - Etapas do pipeline de experimentos.
 Funções reutilizáveis por scripts CLI e pelo app Streamlit.
 
 Cada flag de alvo escreve seus resultados numa subpasta própria de results/.
@@ -18,7 +18,6 @@ from curvant.models.montecarlo import aplicar_mc_features
 _DIR_RISCO       = 'results/risco'
 _DIR_ISL         = 'results/isl'
 _DIR_VELOCIDADE  = 'results/velocidade'
-_DIR_ACELERACAO  = 'results/aceleracao'
 _DIR_MULTITAREFA = 'results/multitarefa'
 
 
@@ -239,28 +238,6 @@ def etapa_ml_otimizado(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.D
         outdir=_DIR_RISCO,
     )
 
-
-def etapa_accel_regressao(features_df, cfg, plot):
-    """Regressão das acelerações dentro da curva. Targets em ml.regression_targets."""
-    from curvant.models import treinar_regressao
-
-    ml = cfg['ml']
-    targets = ml.get('regression_targets', ['curve_accel_y_max', 'curve_abs_accel_max'])
-    resultados = []
-    for target in targets:
-        print(f"\n  Regressão — {target}")
-        resultados.append(treinar_regressao(
-            features_df,
-            target=target,
-            plot=plot,
-            random_state=ml['random_state'],
-            test_size=ml['test_size'],
-            cv_folds=ml['cv_folds'],
-            pca_n_components=ml.get('pca_n_components'),
-            cap_percentil=ml.get('isl_max_cap_percentil'),
-            outdir=_DIR_ACELERACAO,
-        ))
-    return resultados
 
 
 def etapa_isl_modelo(features_df: pd.DataFrame, cfg: dict, plot: bool) -> pd.DataFrame:

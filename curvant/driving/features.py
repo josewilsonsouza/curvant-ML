@@ -25,9 +25,6 @@ NAO_FEATURES: dict[str, str] = {
     'isl_value': 'target', 'isl_mean': 'target', 'isl_max': 'target',
     'isl_class': 'target', 'isl_alto': 'target',
     'isl_sensor_max': 'target', 'isl_sensor_mean': 'target', 'isl_sensor_class': 'target',
-    # alvos de aceleração dentro da curva
-    'curve_accel_y_max': 'target', 'curve_accel_y_mean': 'target',
-    'curve_abs_accel_max': 'target', 'curve_abs_accel_mean': 'target',
     # alvo de velocidade (ponto de pico do ISL na curva)
     'v_critica': 'target',
     # geometria bruta da curva atual (usar f4_* quando disponível)
@@ -53,28 +50,6 @@ def colunas_features(df: pd.DataFrame, desativar: list[str] | None = None) -> li
     """
     excluir = set(NAO_FEATURES) | set(desativar if desativar is not None else _FEATURES_DESATIVADAS)
     return [c for c in df.columns if c not in excluir]
-
-
-def calcular_estatisticas_por_trajeto(df: pd.DataFrame) -> pd.DataFrame:
-    """Retorna estatísticas médias de variáveis-chave agrupadas por trajeto."""
-    vars_interesse = {
-        'vehicle_speed': 'v',
-        'theta_direcao': 'theta',
-        'accel_x': 'a_x',
-        'accel_y': 'a_y',
-        'accel_z': 'a_z',
-    }
-    rows = []
-    for id_route_atual, trajeto in df.groupby('id_route'):
-        row = {
-            'id_trajeto': id_route_atual,
-            'numb_curve': len(trajeto['trecho_curvo'].unique()) - 1,
-        }
-        for var, alias in vars_interesse.items():
-            if var in trajeto.columns:
-                row[alias] = round(trajeto[var].mean(), 2)
-        rows.append(row)
-    return pd.DataFrame(rows)
 
 
 # Resolução de parâmetros
@@ -338,24 +313,6 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
     return out
 
 
-def _alvos_aceleracao(pts_curva: pd.DataFrame) -> dict:
-    """Targets de aceleração lateral e total dentro da curva (sem assumir μ)."""
-    out: dict = {}
-
-    if 'accel_y' in pts_curva.columns:
-        out['curve_accel_y_max']  = float(pts_curva['accel_y'].abs().max())
-        out['curve_accel_y_mean'] = float(pts_curva['accel_y'].abs().mean())
-    else:
-        out['curve_accel_y_max'] = out['curve_accel_y_mean'] = np.nan
-
-    if 'abs_accel' in pts_curva.columns:
-        out['curve_abs_accel_max']  = float(pts_curva['abs_accel'].max())
-        out['curve_abs_accel_mean'] = float(pts_curva['abs_accel'].mean())
-    else:
-        out['curve_abs_accel_max'] = out['curve_abs_accel_mean'] = np.nan
-
-    return out
-
 
 def _geometria_curva(pts_curva: pd.DataFrame) -> dict:
     """
@@ -435,7 +392,7 @@ def extrair_features(
       _geometria_curva          Grupo 4 — geometria real da curva à frente (f4_*)
       _adicionar_contexto       Grupo 5 — contexto das curvas anteriores (post-hoc)
 
-      _alvos_manobra / _alvos_isl / _alvos_aceleracao — targets dentro da curva
+      _alvos_manobra / _alvos_isl — targets dentro da curva
 
     Janela pré-curva: distância fixa (janela_distancia) ou dinâmica
     d = v²/(2·a_confort) ∈ [janela_distancia_min, janela_distancia_max]. A janela
@@ -476,7 +433,6 @@ def extrair_features(
         if pts_curva.empty:
             pts_curva = curva
         row.update(_alvos_isl(pts_curva))
-        row.update(_alvos_aceleracao(pts_curva))
         row.update(_geometria_curva(pts_curva))
 
         dados_janela.append(row)

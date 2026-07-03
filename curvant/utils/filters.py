@@ -3,7 +3,6 @@ import pandas as pd
 from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 
-
 # Utilitário interno
 
 def _por_trajeto(df: pd.DataFrame, fn, cols: list[str], **kwargs) -> pd.DataFrame:
