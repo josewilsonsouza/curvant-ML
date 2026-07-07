@@ -1,29 +1,9 @@
-"""
-CurvantML — Simulação de Monte Carlo para estimativa de risco em curvas.
-
-Dado o perfil de velocidade da janela pré-curva e o raio da curva à frente
-(F4), simula N cenários de velocidade na entrada para produzir uma distribuição
-de probabilidade sobre as classes de ISL (baixo / médio / alto).
-
-Lógica:
-  1. Ajusta tendência linear à velocidade nos últimos k pontos da janela.
-  2. A velocidade na entrada é o valor extrapolado no último instante.
-  3. O ruído (σ) é estimado pelo desvio dos resíduos em torno da tendência —
-     captura a erraticidade do motorista (frenagem suave vs brusca).
-  4. Simula N amostras de v_entrada ~ N(μ, σ²), clipadas a [0, 200] km/h.
-  5. Para cada amostra: ISL_i = (v_i / 3,6)² / (R × g × μ).
-  6. Classifica e retorna P(baixo), P(médio), P(alto).
-
-Se `f4_raio_min` estiver ausente ou zero, as colunas mc_p_* ficam 0.0.
-"""
-
 import numpy as np
 import pandas as pd
 
 from curvant.constants import (
     G as _G, MU as _MU, ISL_BAIXO as _ISL_BAIXO_MAX, ISL_ALTO as _ISL_MEDIO_MAX,
 )
-
 
 def simular_risco_monte_carlo(
     velocidades: np.ndarray,
@@ -40,13 +20,13 @@ def simular_risco_monte_carlo(
 
     Parâmetros
     ----------
-    velocidades : ndarray (km/h) — perfil temporal da janela pré-curva
-    tempos      : ndarray (s)    — timestamps correspondentes
-    raio_curva  : float (m)      — raio mínimo da curva (f4_raio_min)
-    n_sim       : int            — número de simulações
-    k_ultimos   : int            — pontos finais usados para tendência
-    sigma_min   : float (km/h)   — desvio mínimo (incerteza de sensor)
-    rng         : Generator      — gerador numpy para reprodutibilidade
+    velocidades : ndarray (km/h) - perfil temporal da janela pré-curva
+    tempos      : ndarray (s)    - timestamps correspondentes
+    raio_curva  : float (m)      - raio mínimo da curva (f4_raio_min)
+    n_sim       : int            - número de simulações
+    k_ultimos   : int            - pontos finais usados para tendência
+    sigma_min   : float (km/h)   - desvio mínimo (incerteza de sensor)
+    rng         : Generator      - gerador numpy para reprodutibilidade
 
     Retorna
     -------

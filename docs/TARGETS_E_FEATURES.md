@@ -1,35 +1,17 @@
 # Targets e Features
 
-A ideia é prever, antes do carro entrar numa curva, o quão arriscada ela vai ser.
-Para isso, cada curva vira uma linha de uma tabela, com dois tipos de coluna:
+A ideia é prever, antes do carro entrar numa curva, o quão arriscada ela vai ser. O target é avaliado estritamente dentro da curva e a janela de features fica toda antes da entrada, terminando `lead_gap` metros antes.
 
-- **Target**: o que queremos prever
-- **Feature**: o que usamos para prever
-
-Outro conceito importante é:
-
-- **Janela pré-curva:** é o trecho do percurso **antes** da curva. Todas as features saem daí, porque a previsão é feita antes de chegar na curva. A janela termina um pouco antes da  entrada (uma folga, o `lead_gap`, hoje 30 m), simulando um sistema que avisa o motorista com antecedência.
-
-**Não confundir as duas "janelas" do projeto.** Têm finalidades diferentes:
-
-| Parâmetro | Onde (config) | Para quê | Unidade (default) |
-|---|---|---|---|
-| `lead_gap` | `features` | folga de antecipação: a janela de **features** termina `lead_gap` metros **antes** da entrada da curva | metros (30) |
-| `janela_distancia` | `features` | **tamanho** da janela de features pré-curva | metros (dinâmico) |
-
-O **target** é avaliado estritamente dentro da curva (sem incluir segundos de aproximação). A janela de **features** fica toda antes da entrada, terminando `lead_gap` metros antes.
-
-## 1. O que cada comando prevê
+## CLI
 
 Cada flag do `cvt` treina um alvo diferente (sem flag, mostra a ajuda):
 
 | Comando | O que prevê | Tipo |
 |---|---|---|
-| `--risk` (com `--optimize` usa Optuna) | curva é **Segura ou de Risco** (`manobra_combinado_curva`) | sim/não |
-| `--importance` | mesma coisa, mas só mostra **quais features pesam mais** | - |
-| `--isl` | a **classe de risco ISL** (baixo / médio / alto) + baseline físico | 3 classes |
-| `--multitask` | o **ISL máximo** + as 4 colunas de manobra, tudo de uma vez | misto |
+| `--risk` | curva é **Segura ou de Risco** (`manobra_combinado_curva`) | sim/não |
 | `--velocity` | a **velocidade crítica** da curva (`v_critica`) | número |
+
+Análises complementares do risco (importância de features, Optuna) ficam em `notebooks/analise_risco.ipynb`.
 
 ## 2. Targets
 
@@ -69,7 +51,7 @@ As estatísticas básicas dos sensores na janela antes da curva. Para `vehicle_s
 
 `_mean` (média), `_std` (desvio), `_median` (mediana), `_max`, `_min`, `_slope` (tendência: está acelerando ou freando?), `_cv` (variação relativa), `_mean_tarde` e `_slope_tarde` (os mesmos, mas só na metade final da janela).
 
-> O `engine_rpm` está desligado no `config.yaml` (`features.vars_sensor`), então não há colunas de RPM.
+> O `engine_rpm` está desligado no `features.yaml` (`extracao.vars_sensor`), então não há colunas de RPM.
 
 ### Grupo 2 - Dinâmica derivada da aproximação (11 colunas)
 - `jerk_x_max`, `jerk_x_std`, `jerk_y_max`, `jerk_y_std`: o jerk é a variação brusca da aceleração.
@@ -105,10 +87,10 @@ O `--velocity` **não** usa as 49 features acima. Ele trabalha com a **sequênci
 - **Alguns números fixos por curva**: `jerk_y_max`, as contagens de perigo, a geometria da curva à frente, as probabilidades de Monte Carlo, e o contexto (`mean_isl_antes`, `prev_isl_max`, `n_curvas_antes`).
 - **A resposta da curva anterior** (`prev_v_critica`): usa o valor da velocidade critica da curva passada como pista.
 
-Para mudar as features usadas pela flag `--velocity`, edite `temporais.sensors` e `.scalares_extras` no [config.yaml](../config.yaml).
+Para mudar as features usadas pela flag `--velocity`, edite `flags.velocity.sensors` e `.scalares_extras` no [features.yaml](../features.yaml).
 
 > [!TIP]
 > - **A previsão é antecipada.** A janela pré-curva termina 30 m **antes** da entrada
-  (`config.features.lead_gap`). Nada medido na entrada ou dentro da curva pode ser feature.
-> - **O contexto F5 é atualizado de forma sequencial:** cada curva percorrida alimenta o histórico
+  (`features.yaml` > `extracao.lead_gap`). Nada medido na entrada ou dentro da curva pode ser feature.
+> - **O contexto das curvas anteriores é atualizado de forma sequencial:** cada curva percorrida alimenta o histórico
 da próxima. Neste dataset isso é reconstruído da mesma forma.

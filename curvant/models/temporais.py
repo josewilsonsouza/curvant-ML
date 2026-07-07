@@ -1,32 +1,4 @@
-"""
-CurvantML — Modelos de série temporal: regressão e classificação.
-
-Opera sobre dados brutos da janela pré-curva (não estatísticas agregadas).
-Modelos configuráveis via config.yaml > temporais > model
-(string simples ou lista):
-
-  Neurais (dados sequenciais):
-    gru   — GRU unidirecional
-    lstm  — LSTM unidirecional
-    cnn1d — 1D CNN com pooling adaptativo
-    mlp   — MLP com flatten (baseline sem modelagem temporal)
-
-  Clássicos (sequências achatadas, n_timesteps × n_sensors features):
-    linear  — Ridge Regression (regressão) / Logistic Regression (classificação)
-    rf      — Random Forest
-    xgboost — XGBoost
-
-Tarefa configurável via config.yaml > temporais > task:
-    regression     — MSE / R² / MAE
-    classification — CrossEntropy ou BCE / F1
-
-Targets de regressão:  v_critica | isl_max | isl_mean
-Targets de classificação: manobra_combinado_curva | manobra_accel_curva |
-                          manobra_lateral_curva | manobra_ziguezague_curva | isl_class
-"""
-
 import os
-
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -52,7 +24,6 @@ except ImportError:
     _HAS_XGB = False
 
 from curvant.constants import G as _G_TS, MU as _MU_TS, ISL_BAIXO, ISL_ALTO
-from curvant.driving.features import colunas_features
 from curvant.models.tabular import _base_route
 
 _SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
@@ -141,18 +112,18 @@ def extrair_sequencias_precurva(
 
     Canais temporais (axis=2):
         0 … n_sensors-1  : sensores OBD (vehicle_speed, accel_x, accel_y, engine_rpm …)
-        n_sensors         : distancia_restante — distância até a curva em cada timestep
-                            (d_max_in_window − distancia_acumulada, normalizada para [0,1]).
+        n_sensors         : distancia_restante - distância até a curva em cada timestep
+                            (d_max_in_window - distancia_acumulada, normalizada para [0,1]).
                             Canal decrescente: zero no instante de entrada na curva.
 
     scalares_extras: colunas de features_df adicionadas como canais constantes
     (mesmo valor em todos os timesteps), APÓS os canais temporais.
 
     Retorna:
-        X          — (n, n_timesteps, n_sensors + 1 [+ n_extras]) float32
-        y          — (n,) float32
-        id_route   — (n,) str
-        n_temporal — número de canais temporais (n_sensors + 1)
+        X          - (n, n_timesteps, n_sensors + 1 [+ n_extras]) float32
+        y          - (n,) float32
+        id_route   - (n,) str
+        n_temporal - número de canais temporais (n_sensors + 1)
     """
     sensors_disponiveis = [s for s in sensors if s in df_analysis.columns]
     extras = [c for c in (scalares_extras or []) if c in features_df.columns]
@@ -182,7 +153,9 @@ def extrair_sequencias_precurva(
             continue
 
         mask   = (sub['time_sec'] >= t0) & (sub['time_sec'] <= t1)
-        janela = sub.loc[mask, sensors_disponiveis].values.astype(np.float32)
+        janela_df = sub.loc[mask, sensors_disponiveis].copy()
+        janela_df = janela_df.ffill().bfill().fillna(0.0)
+        janela = janela_df.values.astype(np.float32)
 
         if len(janela) < 2:
             continue
@@ -193,7 +166,7 @@ def extrair_sequencias_precurva(
             axis=1,
         )  # (n_timesteps, n_sensors)
 
-        # distancia_restante: d_max − d(t), decreasing toward zero at curve entry
+        # distancia_restante: d_max - d(t), decreasing toward zero at curve entry
         if has_dist:
             d_raw = sub.loc[mask, 'distancia_acumulada'].values.astype(np.float64)
             d_interp = np.interp(x_new, x_old, d_raw)
@@ -349,7 +322,7 @@ def _flatten_para_classico(X: np.ndarray, n_temporal: int) -> np.ndarray:
         slopes,
     ]
     if C > n_temporal:
-        parts.append(X[:, 0, n_temporal:])  # escalares constantes — basta o 1º timestep
+        parts.append(X[:, 0, n_temporal:])  # escalares constantes - basta o 1º timestep
 
     return np.concatenate(parts, axis=1).astype(np.float32)
 
@@ -419,7 +392,7 @@ def _treinar_um_classico(
                 for j in range(cm.shape[1]):
                     ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
             ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
-            ax.set_title(f'TS {label} — {target}\nF1={f1:.3f}')
+            ax.set_title(f'TS {label} - {target}\nF1={f1:.3f}')
             fig.colorbar(im, ax=ax); fig.tight_layout()
             fig.savefig(os.path.join(outdir, f'cm_{nome}_{target}.pdf'), bbox_inches='tight')
             plt.close(fig)
@@ -439,7 +412,7 @@ def _treinar_um_classico(
             cls_true_isl = _v_para_isl_class(y_test, raios_test)
             f1_isl  = f1_score(cls_true_isl, cls_pred_isl, average='macro', zero_division=0)
             acc_isl = accuracy_score(cls_true_isl, cls_pred_isl)
-            print(f"    → isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
+            print(f"    -> isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
 
         if plot:
             os.makedirs(outdir, exist_ok=True)
@@ -450,7 +423,7 @@ def _treinar_um_classico(
             ax.plot(lim, lim, 'r--', lw=1)
             ax.set_xlabel(f'{target} real ({unit})')
             ax.set_ylabel(f'{target} previsto ({unit})')
-            ax.set_title(f'{label} — R²={r2:.3f}  MAE={mae:.3f}')
+            ax.set_title(f'{label} - R²={r2:.3f}  MAE={mae:.3f}')
             fig.tight_layout()
             fig.savefig(os.path.join(outdir, f'scatter_{nome}.pdf'), bbox_inches='tight')
             plt.close(fig)
@@ -466,7 +439,7 @@ def _treinar_um_classico(
                 ax.set_xticks([0, 1, 2]); ax.set_xticklabels(labels_isl)
                 ax.set_yticks([0, 1, 2]); ax.set_yticklabels(labels_isl)
                 ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
-                ax.set_title(f'{label} — isl_class via v_critica\nF1={f1_isl:.3f}')
+                ax.set_title(f'{label} - isl_class via v_critica\nF1={f1_isl:.3f}')
                 fig.colorbar(im, ax=ax); fig.tight_layout()
                 fig.savefig(os.path.join(outdir, f'cm_{nome}_isl.pdf'), bbox_inches='tight')
                 plt.close(fig)
@@ -599,12 +572,12 @@ def _treinar_um_neural(
         else:
             no_improve += 1
             if no_improve >= patience:
-                print(f"    Early stop — época {epoch + 1}  val: {val_loss:.4f}  "
+                print(f"    Early stop - época {epoch + 1}  val: {val_loss:.4f}  "
                       f"(melhor: {best_val:.4f})")
                 break
 
         if (epoch + 1) % 20 == 0:
-            print(f"    Época {epoch + 1}/{epochs} — train: {ep_loss:.4f}  val: {val_loss:.4f}  "
+            print(f"    Época {epoch + 1}/{epochs} - train: {ep_loss:.4f}  val: {val_loss:.4f}  "
                   f"LR: {optimizer.param_groups[0]['lr']:.2e}")
 
     if best_state is not None:
@@ -621,7 +594,7 @@ def _treinar_um_neural(
         ax.plot(hist_val,   label='val',    alpha=0.8)
         ax.axvline(len(hist_train) - no_improve, color='r', linestyle='--', linewidth=0.8, label='best')
         ax.set_xlabel('Época'); ax.set_ylabel(loss_label)
-        ax.set_title(f'Loss — {model_type.upper()} {task} {target}')
+        ax.set_title(f'Loss - {model_type.upper()} {task} {target}')
         ax.legend()
         fig.tight_layout()
         fig.savefig(os.path.join(outdir, f'loss_{model_type}_{target}.pdf'), bbox_inches='tight')
@@ -632,7 +605,7 @@ def _treinar_um_neural(
         r2     = r2_score(y_test, y_pred)
         mae    = mean_absolute_error(y_test, y_pred)
         unit = 'km/h' if target == 'v_critica' else 'm/s²'
-        print(f"  {model_type.upper()} — R²: {r2:.4f}  MAE: {mae:.4f} {unit}")
+        print(f"  {model_type.upper()} - R²: {r2:.4f}  MAE: {mae:.4f} {unit}")
 
         cls_pred_isl = cls_true_isl = None
         if target == 'v_critica' and raios_test is not None:
@@ -640,7 +613,7 @@ def _treinar_um_neural(
             cls_true_isl = _v_para_isl_class(y_test, raios_test)
             f1_isl  = f1_score(cls_true_isl, cls_pred_isl, average='macro', zero_division=0)
             acc_isl = accuracy_score(cls_true_isl, cls_pred_isl)
-            print(f"    → isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
+            print(f"    -> isl_class via v_critica  F1-macro: {f1_isl:.4f}  Acc: {acc_isl:.4f}")
 
         if plot:
             fig, ax = plt.subplots(figsize=(5, 4))
@@ -649,7 +622,7 @@ def _treinar_um_neural(
             ax.plot(lim, lim, 'r--', lw=1)
             ax.set_xlabel(f'{target} real ({unit})')
             ax.set_ylabel(f'{target} previsto ({unit})')
-            ax.set_title(f'{model_type.upper()} — R²={r2:.3f}  MAE={mae:.3f}')
+            ax.set_title(f'{model_type.upper()} - R²={r2:.3f}  MAE={mae:.3f}')
             fig.tight_layout()
             fig.savefig(os.path.join(outdir, f'scatter_{model_type}_{target}.pdf'), bbox_inches='tight')
             plt.close(fig)
@@ -665,7 +638,7 @@ def _treinar_um_neural(
                 ax.set_xticks([0, 1, 2]); ax.set_xticklabels(labels_isl)
                 ax.set_yticks([0, 1, 2]); ax.set_yticklabels(labels_isl)
                 ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
-                ax.set_title(f'{model_type.upper()} — isl_class via v_critica\nF1={f1_isl:.3f}')
+                ax.set_title(f'{model_type.upper()} - isl_class via v_critica\nF1={f1_isl:.3f}')
                 fig.colorbar(im, ax=ax); fig.tight_layout()
                 fig.savefig(os.path.join(outdir, f'cm_{model_type}_isl.pdf'), bbox_inches='tight')
                 plt.close(fig)
@@ -679,7 +652,7 @@ def _treinar_um_neural(
 
         f1  = f1_score(y_test.astype(int), y_pred, average=avg, zero_division=0)
         acc = accuracy_score(y_test.astype(int), y_pred)
-        print(f"  {model_type.upper()} — F1: {f1:.4f}  Acc: {acc:.4f}")
+        print(f"  {model_type.upper()} - F1: {f1:.4f}  Acc: {acc:.4f}")
 
         if plot:
             cm  = confusion_matrix(y_test.astype(int), y_pred)
@@ -689,7 +662,7 @@ def _treinar_um_neural(
                 for j in range(cm.shape[1]):
                     ax.text(j, i, cm[i, j], ha='center', va='center', fontsize=9)
             ax.set_xlabel('Previsto'); ax.set_ylabel('Real')
-            ax.set_title(f'TS {model_type.upper()} — {target}\nF1={f1:.3f}')
+            ax.set_title(f'TS {model_type.upper()} - {target}\nF1={f1:.3f}')
             fig.colorbar(im, ax=ax); fig.tight_layout()
             fig.savefig(os.path.join(outdir, f'cm_{model_type}_{target}.pdf'), bbox_inches='tight')
             plt.close(fig)
@@ -703,15 +676,19 @@ def treinar_regressao_ts(
     df_analysis: pd.DataFrame,
     features_df: pd.DataFrame,
     cfg: dict,
+    feat_cfg: dict,
     plot: bool = True,
     outdir: str = 'results',
 ) -> None:
     """
     Treina modelos de série temporal (regressão ou classificação) sobre
     dados brutos da janela pré-curva.
-    Configurado em config.yaml > temporais.
+
+    Hiperparâmetros em config.yaml > temporais; canais de entrada (sensors e
+    scalares_extras) em features.yaml > flags.velocity.
     """
     ts_cfg    = cfg.get('temporais', {})
+    vel_cfg   = feat_cfg.get('flags', {}).get('velocity', {})
     raw_model = ts_cfg.get('model', 'gru')
     modelos   = [raw_model.lower()] if isinstance(raw_model, str) else [m.lower() for m in raw_model]
 
@@ -723,7 +700,7 @@ def treinar_regressao_ts(
     task_cfg     = ts_cfg.get('task', 'auto')
     task, n_classes = _detectar_task(target, task_cfg)
 
-    sensors    = ts_cfg.get('sensors', _SENSORS_PADRAO)
+    sensors    = vel_cfg.get('sensors', _SENSORS_PADRAO)
     n_ts       = int(ts_cfg.get('n_timesteps', 50))
     epochs     = int(ts_cfg.get('epochs', 100))
     batch_size = int(ts_cfg.get('batch_size', 32))
@@ -735,7 +712,7 @@ def treinar_regressao_ts(
     kernel     = int(ts_cfg.get('kernel_size', 3))
     test_size  = float(cfg.get('ml', {}).get('test_size', 0.3))
     rnd        = int(cfg.get('ml', {}).get('random_state', 42))
-    scalares_cfg = ts_cfg.get('scalares_extras') or []
+    scalares_cfg = vel_cfg.get('scalares_extras') or []
     patience     = int(ts_cfg.get('early_stopping_patience', 40))
     val_size_nn  = float(ts_cfg.get('val_size', 0.15))
     weight_decay = float(ts_cfg.get('weight_decay', 0.01))
@@ -756,8 +733,7 @@ def treinar_regressao_ts(
         features_df  = ft
 
     scalares_todos = list(dict.fromkeys(scalares_cfg + [prev_col]))
-    cols_validas   = set(colunas_features(features_df))
-    disponiveis    = [c for c in scalares_todos if c in cols_validas]
+    disponiveis    = [c for c in scalares_todos if c in features_df.columns]
     print(f"  Canais escalares extras: {disponiveis}")
 
     X, y, rotas, n_seq_sensor = extrair_sequencias_precurva(
@@ -768,14 +744,14 @@ def treinar_regressao_ts(
     print(f"  {len(X)} sequências  |  canais: {n_sensors} "
           f"({n_seq_sensor} temporais + {len(disponiveis)} escalares)")
 
-    # Cap de percentil (só para regressão — remove valores clipados pelo preprocessing)
+    # Cap de percentil (só para regressão - remove valores clipados pelo preprocessing)
     if task == 'regression':
         cap_pct = ts_cfg.get('target_cap_percentil')
         if cap_pct is not None:
             cap_val  = np.percentile(y, cap_pct)
             mask_cap = y <= cap_val
             X, y, rotas = X[mask_cap], y[mask_cap], rotas[mask_cap]
-            print(f"  Cap {cap_pct}º percentil: ≤ {cap_val:.3f} → {len(y)} sequências mantidas")
+            print(f"  Cap {cap_pct}º percentil: <= {cap_val:.3f} -> {len(y)} sequências mantidas")
 
     # Split estratificado pela mediana/moda do target por rota
     route_y: dict[str, list] = {}
@@ -805,12 +781,12 @@ def treinar_regressao_ts(
     y_train, y_test = y[train_mask], y[~train_mask]
 
     if task == 'regression':
-        print(f"  Split — treino: {len(y_train)} (μ={y_train.mean():.3f})  "
-              f"teste: {len(y_test)} (μ={y_test.mean():.3f})")
+        print(f"  Split - treino: {len(y_train)} (média={y_train.mean():.3f})  "
+              f"teste: {len(y_test)} (média={y_test.mean():.3f})")
     else:
         vals, cnts = np.unique(y_test.astype(int), return_counts=True)
         dist = ' | '.join(f'cls{v}:{c}' for v, c in zip(vals, cnts))
-        print(f"  Split — treino: {len(y_train)}  teste: {len(y_test)} ({dist})")
+        print(f"  Split - treino: {len(y_train)}  teste: {len(y_test)} ({dist})")
 
     # Extrai raios do teste antes da normalização (canal escalar constante)
     raios_test = None
@@ -831,7 +807,7 @@ def treinar_regressao_ts(
         if preditores:
             _baseline_persistencia_vcritica(y_test, raios_test, preditores, outdir=outdir)
 
-    # Normaliza sensores (fit apenas no treino) — compartilhado por todos os modelos
+    # Normaliza sensores (fit apenas no treino) - compartilhado por todos os modelos
     for j in range(n_sensors):
         sc = StandardScaler()
         X_train[:, :, j] = sc.fit_transform(X_train[:, :, j])

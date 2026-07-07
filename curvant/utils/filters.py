@@ -116,10 +116,10 @@ def filtrar_kalman(
     Medição:          [posição]
 
     R : variância do ruído de medição (GPS)
-        maior → menos confiança no GPS → trajetória mais suave
+        maior -> menos confiança no GPS -> trajetória mais suave
         típico para GPS veicular: 1e-5 a 1e-4
     Q : variância do ruído de processo (incerteza na velocidade)
-        maior → o filtro acompanha mudanças mais rápidas
+        maior -> o filtro acompanha mudanças mais rápidas
         típico: 1e-7 a 1e-5
 
     Se time_sec não estiver disponível, assume dt=1 entre pontos.
@@ -179,7 +179,6 @@ def _kalman_vel_constante(z: np.ndarray, times: np.ndarray, R: float, Q: float) 
 
     return resultado
 
-
 # Dispatcher
 
 _METODOS = {
@@ -189,7 +188,6 @@ _METODOS = {
     'media_movel': filtrar_media_movel,
     'kalman':      filtrar_kalman,
 }
-
 
 def aplicar_filtro(
     df: pd.DataFrame,
@@ -204,11 +202,11 @@ def aplicar_filtro(
     cols      : colunas a filtrar (padrão: lat e lon; pode incluir 'x', 'y')
 
     Parâmetros por método:
-      mediana      → janela (int, default 5)
-      savgol       → window_length (int, ímpar, default 11), polyorder (int, default 2)
-      gaussiano    → sigma (float, default 2.0)
-      media_movel  → janela (int, default 5)
-      kalman       → R (float, default 1e-5), Q (float, default 1e-6)
+      mediana      -> janela (int, default 5)
+      savgol       -> window_length (int, ímpar, default 11), polyorder (int, default 2)
+      gaussiano    -> sigma (float, default 2.0)
+      media_movel  -> janela (int, default 5)
+      kalman       -> R (float, default 1e-5), Q (float, default 1e-6)
 
     Nota: filtros aplicados sobre lat/lon NÃO atualizam automaticamente as colunas
     Cartesianas x/y. Se x/y forem usadas no pipeline (curve_detection), passe

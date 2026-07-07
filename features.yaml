@@ -1,0 +1,124 @@
+# Ao criar uma feature nova em curvant/driving/features.py, adicione-a à flag
+
+# Extração de features por curva, a partir da janela pré-curva. A janela termina em (entrada_da_curva - lead_gap) e começa janela_distancia metros antes.
+# Modo dinâmico (janela_distancia: null): d = v² / (2 × janela_acel_confort), com clip
+# entre janela_distancia_min e janela_distancia_max.
+extracao:
+  janela_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × janela_acel_confort)
+  janela_acel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
+  janela_distancia_min: 20       # m - tamanho mínimo da janela dinâmica
+  janela_distancia_max: 400      # m - tamanho máximo da janela dinâmica
+  lead_gap: 30                   # m - folga antes da entrada (predição antecipada); 0 = sem folga
+  vars_sensor:                   # sensores cujas estatísticas viram features na janela pré-curva
+    - vehicle_speed
+    - accel_x
+    - accel_y
+    - engine_rpm
+    - accelerator_pedal_pos_d    # posição do pedal de acelerador (ausente no eletronuclear)
+
+flags:
+
+  # Classificação Segura/Risco (tabular). Lista chapada de features.
+  risk:
+    features:
+      # estatísticas da velocidade na janela pré-curva
+      - vehicle_speed_mean
+      - vehicle_speed_std
+      - vehicle_speed_median
+      - vehicle_speed_max
+      - vehicle_speed_min
+      - vehicle_speed_slope
+      - vehicle_speed_cv
+      - vehicle_speed_mean_tarde
+      - vehicle_speed_slope_tarde
+      # estatísticas da aceleração longitudinal
+      - accel_x_mean
+      - accel_x_std
+      - accel_x_median
+      - accel_x_max
+      - accel_x_min
+      - accel_x_slope
+      - accel_x_mean_tarde
+      - accel_x_slope_tarde
+      # estatísticas da aceleração lateral
+      - accel_y_mean
+      - accel_y_std
+      - accel_y_median
+      - accel_y_max
+      - accel_y_min
+      - accel_y_slope
+      - accel_y_mean_tarde
+      - accel_y_slope_tarde
+      # estatísticas da posição do pedal de acelerador
+      - accelerator_pedal_pos_d_mean
+      - accelerator_pedal_pos_d_std
+      - accelerator_pedal_pos_d_median
+      - accelerator_pedal_pos_d_max
+      - accelerator_pedal_pos_d_min
+      - accelerator_pedal_pos_d_slope
+      - accelerator_pedal_pos_d_cv
+      - accelerator_pedal_pos_d_mean_tarde
+      - accelerator_pedal_pos_d_slope_tarde
+      # jerk (derivada da aceleração) e contagens de eventos na janela
+      - jerk_x_max
+      - jerk_x_std
+      - jerk_y_max
+      - jerk_y_std
+      - distance_car_curve
+      - n_perigo_accel_janela
+      - janela_abs_accel_max
+      - n_perigo_lateral_janela
+      - janela_bearing_std
+      - janela_n_mudancas_dir
+      - janela_bearing_range
+      # raio da trajetória na janela pré-curva
+      - janela_raio_min
+      - janela_raio_mean
+      - janela_raio_last
+      - throttle_off_distance
+      # geometria real da curva à frente
+      - f4_raio_min
+      - f4_raio_mean
+      - f4_dnit_num
+      # contexto das curvas anteriores
+      - n_curvas_antes
+      - prev_isl_max
+      - mean_isl_antes
+      - prev_raio_min
+      - prev_raio_mean
+      - prev_dnit_num
+      # probabilidades de classe de ISL (simulação de Monte Carlo)
+      - mc_p_baixo
+      - mc_p_medio
+      - mc_p_alto
+
+  # Importância de features: é a análise do modelo de risco, então usa a mesma lista.
+  importance:
+    herda: risk
+
+  # Previsão da velocidade crítica (série temporal). Duas entradas distintas:
+  #   sensors         - canais de série temporal (n_timesteps por curva)
+  #   scalares_extras - escalares fixos por curva, adicionados como canais constantes
+  velocity:
+    sensors:
+      - vehicle_speed
+      - accel_x
+      - accel_y
+      - engine_rpm
+      - accelerator_pedal_pos_d
+    scalares_extras:
+      - janela_raio_min
+      - janela_raio_mean
+      - janela_raio_last
+      - jerk_y_max
+      - n_perigo_accel_janela
+      - n_perigo_lateral_janela
+      - f4_raio_min
+      - f4_raio_mean
+      - f4_dnit_num
+      - mc_p_baixo
+      - mc_p_medio
+      - mc_p_alto
+      - mean_isl_antes
+      - prev_isl_max
+      - n_curvas_antes

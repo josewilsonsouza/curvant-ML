@@ -1,13 +1,3 @@
-"""
-Pré-processamento de dados OBD para limpeza de ruídos identificados na análise exploratória.
-
-Etapas aplicadas (em ordem):
-  1. Clipa spikes do acelerômetro (|a| > limite fisicamente plausível)
-  2. Remove pontos com velocidade impossível (OBD bug)
-  3. Thinning de pontos parados consecutivos (GPS oscila quando parado → contamina spline)
-  4. Divide trajetos nos gaps temporais grandes (dados de momentos distintos concatenados)
-"""
-
 from curvant.utils.config import carregar_config
 import numpy as np
 import pandas as pd
@@ -220,7 +210,6 @@ def main(args: argparse.Namespace) -> None:
         'min_pontos_segmento':      args.min_pontos_segmento,
     }
     executar_preprocessamento(args.input, args.output, overrides)
-
 
 def criar_parser() -> argparse.ArgumentParser:
     """Cria parser de argumentos para CLI."""

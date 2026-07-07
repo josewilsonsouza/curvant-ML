@@ -8,61 +8,69 @@ from curvant.driving.risk_measures import calcular_bearing as _calcular_bearing_
 # Encoding numérico da classe DNIT para feature prev_dnit_num
 _DNIT_NUM = {'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4}
 
-# Colunas que NÃO são features, com o motivo de cada uma. Fonte única do projeto:
-# qualquer coluna que não esteja aqui é tratada como feature por colunas_features().
-#   'id'       — identificador / metadado da linha
-#   'target'   — alvo de predição (medido dentro da curva)
-#   'in_curve' — geometria bruta medida dentro da curva (seria leakage como feature)
-#   'boundary' — medido na entrada da curva (leakage sob predição antecipada, lead_gap > 0)
-NAO_FEATURES: dict[str, str] = {
-    # identificadores
-    'id_route': 'id', 'id_trecho_curvo': 'id', 'time_inicio': 'id', 'time_fim': 'id',
-    # alvos de caracterização por curva
-    'manobra': 'target', 'manobra_combinado_curva': 'target',
-    'manobra_accel_curva': 'target', 'manobra_lateral_curva': 'target',
-    'manobra_ziguezague_curva': 'target',
-    # alvos de ISL (cinemático e baseado no sensor)
-    'isl_value': 'target', 'isl_mean': 'target', 'isl_max': 'target',
-    'isl_class': 'target', 'isl_alto': 'target',
-    'isl_sensor_max': 'target', 'isl_sensor_mean': 'target', 'isl_sensor_class': 'target',
-    # alvo de velocidade (ponto de pico do ISL na curva)
-    'v_critica': 'target',
-    # geometria bruta da curva atual (usar f4_* quando disponível)
-    'curve_raio_min': 'in_curve', 'curve_raio_mean': 'in_curve', 'curve_dnit_num': 'in_curve',
-}
+# Seleção de features por flag (whitelist).
+#
+# A verdade sobre quais colunas cada flag usa mora em features.yaml. Antes de
+# treinar, o CLI resolve a lista da flag (resolver_features_flag) e a instala na
+# global _FEATURES_ATIVAS (configurar_features_ativas). colunas_features() então
+# devolve exatamente essas colunas, na ordem listada, ignorando as ausentes.
+
+_FEATURES_ATIVAS: list[str] | None = None
 
 
-_FEATURES_DESATIVADAS: list[str] = []
+def resolver_features_flag(feat_cfg: dict, flag: str) -> list[str]:
+    """Lista de features de uma flag no features.yaml, seguindo 'herda'."""
+    flags = feat_cfg.get('flags', {})
+    if flag not in flags:
+        raise KeyError(f"Flag '{flag}' não encontrada em features.yaml (flags: {list(flags)}).")
+    conf = flags[flag] or {}
+    if 'herda' in conf:
+        return resolver_features_flag(feat_cfg, conf['herda'])
+    lista = conf.get('features')
+    if lista is None:
+        raise KeyError(f"Flag '{flag}' não define 'features' nem 'herda' em features.yaml.")
+    return list(lista)
 
 
-def configurar_features_desativadas(lista: list[str] | None) -> None:
-    """Define globalmente quais features estão desativadas (lida de config.features.desativar)."""
-    global _FEATURES_DESATIVADAS
-    _FEATURES_DESATIVADAS = list(lista or [])
+def configurar_features_ativas(lista: list[str] | None) -> None:
+    """Instala a whitelist de features da flag em execução (usada por colunas_features)."""
+    global _FEATURES_ATIVAS
+    _FEATURES_ATIVAS = list(lista) if lista is not None else None
 
 
-def colunas_features(df: pd.DataFrame, desativar: list[str] | None = None) -> list[str]:
-    """Colunas de df que são features (todas as que não estão em NAO_FEATURES).
+def colunas_features(df: pd.DataFrame) -> list[str]:
+    """Features de df segundo a whitelist ativa (features.yaml), na ordem listada."""
+    if _FEATURES_ATIVAS is None:
+        raise RuntimeError(
+            "Whitelist de features não configurada. Chame configurar_features_ativas() "
+            "com a lista da flag (features.yaml) antes de treinar."
+        )
+    presentes = [c for c in _FEATURES_ATIVAS if c in df.columns]
+    ausentes  = [c for c in _FEATURES_ATIVAS if c not in df.columns]
+    if ausentes:
+        print(f"  [features] AVISO: {len(ausentes)} feature(s) da whitelist ausente(s) no dataframe: {ausentes}")
+    return presentes
 
-    desativar: sobrescreve a lista global para esta chamada específica.
-    A lista global é configurada via configurar_features_desativadas() a partir de
-    config.features.desativar, então os callers existentes não precisam mudar.
-    """
-    excluir = set(NAO_FEATURES) | set(desativar if desativar is not None else _FEATURES_DESATIVADAS)
-    return [c for c in df.columns if c not in excluir]
+
+def checar_leakage(feature_cols: list[str], target: str) -> None:
+    """Falha se o alvo estiver entre as features (whitelist mal configurada = leakage)."""
+    if target in feature_cols:
+        raise ValueError(
+            f"Leakage: o alvo '{target}' está na whitelist de features. Remova-o de features.yaml."
+        )
 
 
 # Resolução de parâmetros
 
 def _resolver_vars_sensor(vars_sensor: list | None) -> list:
-    """vars_sensor explícito -> config.yaml (features.vars_sensor) -> default."""
+    """vars_sensor explícito -> features.yaml (extracao.vars_sensor) -> default."""
     if vars_sensor:
         return vars_sensor
     try:
-        from curvant.utils.config import carregar_config
+        from curvant.utils.config import carregar_features_config
 
-        cfg = carregar_config()
-        cfg_vars = cfg.get('features', {}).get('vars_sensor') if isinstance(cfg, dict) else None
+        fc = carregar_features_config()
+        cfg_vars = fc.get('extracao', {}).get('vars_sensor') if isinstance(fc, dict) else None
         if cfg_vars and isinstance(cfg_vars, list) and len(cfg_vars) > 0:
             return cfg_vars
     except Exception:
@@ -196,7 +204,7 @@ def _features_bearing_janela(janela: pd.DataFrame) -> dict:
     ])
 
     out['janela_bearing_std']   = float(np.std(deltas)) if len(deltas) > 1 else 0.0
-    out['janela_bearing_range'] = float(np.ptp(bearings))
+    out['janela_bearing_range'] = float(np.ptp(deltas))  # range sobre deltas circulares, não bearings brutos
 
     # mesma lógica de alternância do critério de zigue-zague (limiar 15°)
     contador, ultimo_sinal = 0, 0
@@ -255,7 +263,8 @@ def _features_geometria_janela(janela: pd.DataFrame) -> dict:
     if 'raio_curvatura' not in janela.columns:
         return nan3
 
-    raios = janela['raio_curvatura'].replace(0, np.nan).dropna()
+    raios = janela['raio_curvatura']
+    raios = raios[np.isfinite(raios) & (raios > 0)].clip(upper=2000.0)
     if len(raios) == 0:
         return nan3
 
@@ -312,6 +321,38 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
 
     return out
 
+
+
+def _alvos_pedal(pts_curva: pd.DataFrame) -> dict:
+    """Targets de comportamento do acelerador dentro da curva."""
+    col = 'accelerator_pedal_pos_d'
+    vazio = {'accel_pedal_min_curva': np.nan, 'accel_pedal_mean_curva': np.nan}
+    if col not in pts_curva.columns:
+        return vazio
+    vals = pts_curva[col].dropna()
+    if vals.empty:
+        return vazio
+    return {
+        'accel_pedal_min_curva':  float(vals.min()),
+        'accel_pedal_mean_curva': float(vals.mean()),
+    }
+
+
+def _features_pedal_janela(janela: pd.DataFrame, dist_entrada: float) -> dict:
+    """
+    Feature comportamental: distância (m) antes da entrada em que o motorista
+    fechou o acelerador pela última vez (pedal < 10%).
+    Zero = nunca fechou na janela (entrou acelerando).
+    Maior valor = fechou o acelerador mais cedo = abordagem mais controlada.
+    """
+    col = 'accelerator_pedal_pos_d'
+    if col not in janela.columns or janela[col].isna().all():
+        return {'throttle_off_distance': np.nan}
+    fechado = janela[janela[col] < 10.0]
+    if fechado.empty:
+        return {'throttle_off_distance': 0.0}
+    dist_ultimo_fechado = float(fechado['distancia_acumulada'].max())
+    return {'throttle_off_distance': max(0.0, dist_entrada - dist_ultimo_fechado)}
 
 
 def _geometria_curva(pts_curva: pd.DataFrame) -> dict:
@@ -415,7 +456,7 @@ def extrair_features(
             df, id_route_atual, dist_entrada, lead_gap, janela_distancia,
             janela_acel_confort, janela_distancia_min, janela_distancia_max,
         )
-        if janela.empty:
+        if len(janela) < 3:
             continue
 
         row: dict = {
@@ -427,12 +468,14 @@ def extrair_features(
         row.update(_features_sensores(janela, vars_sensor))
         row.update(_features_dinamica(janela))
         row.update(_features_geometria_janela(janela))
+        row.update(_features_pedal_janela(janela, dist_entrada))
         row.update(_alvos_manobra(curva))
 
         pts_curva = curva[curva['curva'] == True] if 'curva' in curva.columns else curva
         if pts_curva.empty:
             pts_curva = curva
         row.update(_alvos_isl(pts_curva))
+        row.update(_alvos_pedal(pts_curva))
         row.update(_geometria_curva(pts_curva))
 
         dados_janela.append(row)

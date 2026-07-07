@@ -63,22 +63,22 @@ def _salvar_cache(features_df: pd.DataFrame, df_at: pd.DataFrame, data_path: str
         json.dump({"key": _cache_key(data_path)}, f)
 
 
-def _executar_pipeline(data_path: str, cfg: dict):
-    from curvant.pipeline import etapa_curvas, etapa_analise_conducao
+def _executar_pipeline(data_path: str, cfg: dict, feat_cfg: dict):
+    from curvant.steps import detect_curves, label_driving
     from curvant.driving.curve_detection import identificar_trechos_curvos
-    from curvant.driving.features import extrair_features, configurar_features_desativadas
+    from curvant.driving.features import extrair_features
 
     df = pd.read_parquet(data_path)
 
     with contextlib.redirect_stdout(io.StringIO()):
-        dfs_curves = etapa_curvas(df, cfg)
+        dfs_curves = detect_curves.run(df, cfg)
 
     raio_min = cfg["curve_detection"]["raio_min"]
     raio_clip = dfs_curves["raio_curvatura"].clip(lower=raio_min)
     dfs_curves["ctp_accel"] = (dfs_curves["vehicle_speed"] / 3.6) ** 2 / raio_clip
 
     with contextlib.redirect_stdout(io.StringIO()):
-        df_analysis = etapa_analise_conducao(dfs_curves, cfg, mostrar_risco=False)
+        df_analysis = label_driving.run(dfs_curves, cfg, mostrar_risco=False)
 
     df_analysis[["manobra_accel", "manobra_lateral", "manobra_ziguezague"]] = (
         df_analysis[["manobra_accel", "manobra_lateral", "manobra_ziguezague"]].astype(int)
@@ -87,24 +87,24 @@ def _executar_pipeline(data_path: str, cfg: dict):
     with contextlib.redirect_stdout(io.StringIO()):
         df_at = identificar_trechos_curvos(df_analysis)
 
-    ft = cfg["features"]
-    configurar_features_desativadas(ft.get("desativar"))
+    ex = feat_cfg["extracao"]
     features_df = extrair_features(
         df_at,
-        janela_distancia=ft.get("janela_distancia"),
-        janela_acel_confort=ft.get("janela_acel_confort", 2.5),
-        janela_distancia_min=ft.get("janela_distancia_min", 10.0),
-        janela_distancia_max=ft.get("janela_distancia_max", 200.0),
-        lead_gap=ft.get("lead_gap", 0.0),
-        vars_sensor=ft.get("vars_sensor"),
+        janela_distancia=ex.get("janela_distancia"),
+        janela_acel_confort=ex.get("janela_acel_confort", 2.5),
+        janela_distancia_min=ex.get("janela_distancia_min", 10.0),
+        janela_distancia_max=ex.get("janela_distancia_max", 200.0),
+        lead_gap=ex.get("lead_gap", 0.0),
+        vars_sensor=ex.get("vars_sensor"),
     )
     return features_df, df_at
 
 
 @st.cache_data(show_spinner=False)
 def carregar_pipeline(rebuild: bool = False):
-    from curvant.utils.config import carregar_config
+    from curvant.utils.config import carregar_config, carregar_features_config
     cfg = carregar_config()
+    feat_cfg = carregar_features_config()
     data_path = next(p for p in _CANDIDATOS if os.path.exists(p))
 
     if not rebuild and _cache_valido(data_path):
@@ -112,10 +112,10 @@ def carregar_pipeline(rebuild: bool = False):
         df_at = pd.read_parquet(_DFAT_FILE)
     else:
         with st.spinner("Rodando pipeline - primeira execução (~2 min)..."):
-            features_df, df_at = _executar_pipeline(data_path, cfg)
+            features_df, df_at = _executar_pipeline(data_path, cfg, feat_cfg)
         _salvar_cache(features_df, df_at, data_path)
 
-    return features_df, df_at, cfg
+    return features_df, df_at, cfg, feat_cfg
 
 
 def bearing_wrap(b2: float, b1: float) -> float:
@@ -146,7 +146,7 @@ def cor_manobra(label: str) -> str:
 
 # Dados
 
-features_df, df_at, cfg = carregar_pipeline(rebuild=False)
+features_df, df_at, cfg, feat_cfg = carregar_pipeline(rebuild=False)
 loc_map = df_at[["id_route", "loc_coleta"]].drop_duplicates().set_index("id_route")["loc_coleta"]
 features_df["_local"] = features_df["id_route"].map(loc_map)
 
@@ -156,7 +156,7 @@ st.sidebar.image(os.path.join(_ROOT, "images", "curvantML.png"), width=180)
 st.sidebar.markdown("Visualizador de manobras em curvas")
 if st.sidebar.button("Reprocessar dados", use_container_width=True):
     carregar_pipeline.clear()
-    features_df, df_at, cfg = carregar_pipeline(rebuild=True)
+    features_df, df_at, cfg, feat_cfg = carregar_pipeline(rebuild=True)
     st.rerun()
 st.sidebar.divider()
 
@@ -307,7 +307,7 @@ if visao == "Curva selecionada":
 
     st.divider()
     st.subheader("Mapa do trecho")
-    lead_gap = cfg["features"].get("lead_gap", 0)
+    lead_gap = feat_cfg["extracao"].get("lead_gap", 0)
     st.caption(
         f"O trecho azul é a **janela de features** usada para predição. "
         f"Termina {lead_gap} m antes da entrada da curva (lead_gap). "

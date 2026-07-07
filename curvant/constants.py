@@ -1,14 +1,3 @@
-"""
-Constantes físicas do ISL — fonte única do projeto.
-
-g é constante universal (fixa). μ (atrito) e os limiares de classe vêm de
-config.yaml (seção `physics`), então podem ser ajustados sem editar código.
-Todos os módulos importam daqui em vez de redefinir 9.81 / 0.6 / 0.5 / 0.8.
-
-  ISL = v² / (R · g · μ)
-  classe = 'baixo' se ISL < ISL_BAIXO | 'alto' se ISL >= ISL_ALTO | senão 'medio'
-"""
-
 try:
     from curvant.utils.config import carregar_config
     _phys = (carregar_config() or {}).get('physics', {}) or {}

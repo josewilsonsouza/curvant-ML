@@ -31,15 +31,13 @@ from sklearn import svm
 from xgboost import XGBClassifier, XGBRegressor
 
 from curvant.constants import G as _G, MU as _MU
-from curvant.driving.features import colunas_features
-
+from curvant.driving.features import colunas_features, checar_leakage
 
 # Utilitários internos
 
 def _base_route(id_route: str) -> str:
     """Remove sufixo _p<N> gerado pelo splittar_por_gaps, retornando o ID original da gravação."""
     return re.sub(r'_p\d+$', '', id_route)
-
 
 def _split_por_rota(
     df: pd.DataFrame,
@@ -53,7 +51,7 @@ def _split_por_rota(
     groups_train é usado pelo GroupKFold.
     """
     id_routes  = df['id_route'].astype(str)
-    base_rotas = list({_base_route(r) for r in id_routes})
+    base_rotas = sorted({_base_route(r) for r in id_routes})
     train_base, test_base = train_test_split(
         base_rotas, test_size=test_size, random_state=random_state
     )
@@ -61,6 +59,7 @@ def _split_por_rota(
     test_base_set  = set(test_base)
 
     feature_cols = colunas_features(df)
+    checar_leakage(feature_cols, target)
     cols = feature_cols + [target, 'id_route']
 
     df_train = (
@@ -111,8 +110,9 @@ def _split_rota_generico(
     NaN em colunas de raio são preenchidos pela mediana de treino; demais NaN -> 0.
     Retorna (X_train, X_test, y_train, y_test, groups_train).
     """
+    checar_leakage(feature_cols, target)
     id_routes  = df['id_route'].astype(str)
-    base_rotas = list({_base_route(r) for r in id_routes})
+    base_rotas = sorted({_base_route(r) for r in id_routes})
     train_base, test_base = train_test_split(
         base_rotas, test_size=test_size, random_state=random_state
     )
@@ -141,11 +141,13 @@ def _split_rota_generico(
 def _preparar_xy(df: pd.DataFrame, target: str = 'manobra') -> tuple[np.ndarray, np.ndarray]:
     """Extrai features e target como arrays numpy brutos (sem pré-processamento)."""
     feature_cols = colunas_features(df)
+    checar_leakage(feature_cols, target)
     df_clean = df[feature_cols + [target]].dropna()
     return df_clean[feature_cols].values, df_clean[target].values
 
 
-def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca_n_components=None):
+def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca_n_components=None,
+                        smote_k: int = 5):
     """
     Constrói imblearn Pipeline: (SMOTE ->) StandardScaler (-> PCA) -> classificador.
 
@@ -155,7 +157,7 @@ def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca
     """
     steps = []
     if use_smote:
-        steps.append(('smote', SMOTE(random_state=random_state)))
+        steps.append(('smote', SMOTE(k_neighbors=smote_k, random_state=random_state)))
     steps.append(('scaler', StandardScaler()))
     if pca_n_components is not None:
         steps.append(('pca', PCA(n_components=pca_n_components, random_state=random_state)))
@@ -222,7 +224,12 @@ def aplicar_modelos_ml(
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
     )
-    cv = GroupKFold(n_splits=cv_folds)
+    cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+
+    # k_neighbors do SMOTE: no mínimo 1, no máximo 5, limitado pelo tamanho da minoria no fold
+    n_minority_train = int(y_train.sum()) if y_train.mean() <= 0.5 else int((1 - y_train).sum())
+    n_minority_per_fold = max(1, n_minority_train * (cv_folds - 1) // cv_folds)
+    smote_k = min(5, n_minority_per_fold - 1)
 
     modelos = {
         'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
@@ -241,11 +248,13 @@ def aplicar_modelos_ml(
 
     linhas = []
     for nome, clf in modelos.items():
-        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components, use_smote=True)
+        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components,
+                                   use_smote=True, smote_k=smote_k)
 
+        f1_scorer = 'f1' if f1_average == 'binary' else f'f1_{f1_average}'
         cv_res = cross_validate(
             pipe, X_train, y_train, cv=cv, groups=groups_train,
-            scoring={'acc': 'accuracy', 'f1': f'f1_{f1_average}'},
+            scoring={'acc': 'accuracy', 'f1': f1_scorer},
         )
         cv_acc = cv_res['test_acc'].mean()
         cv_f1  = cv_res['test_f1'].mean()
@@ -338,7 +347,8 @@ def _optuna_xgb(
             clf     = XGBRegressor(eval_metric='rmse', **params)
             scoring = 'r2'
         pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=(task == 'classify'))
-        cv     = GroupKFold(n_splits=cv_folds)
+        cv     = (StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+                  if task == 'classify' else GroupKFold(n_splits=cv_folds))
         scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring, n_jobs=-1)
         return scores['test_score'].mean()
 
@@ -381,7 +391,8 @@ def _optuna_rf(
             clf     = RandomForestRegressor(**params)
             scoring = 'r2'
         pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=(task == 'classify'))
-        cv     = GroupKFold(n_splits=cv_folds)
+        cv     = (StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
+                  if task == 'classify' else GroupKFold(n_splits=cv_folds))
         scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups, scoring=scoring, n_jobs=-1)
         return scores['test_score'].mean()
 
@@ -407,7 +418,7 @@ def _optuna_lr(
         C = trial.suggest_float('C', 1e-4, 1e3, log=True)
         clf = LogisticRegression(C=C, random_state=random_state, max_iter=2000)
         pipe = _construir_pipeline(clf, random_state=random_state, use_smote=True)
-        cv = GroupKFold(n_splits=cv_folds)
+        cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
         scores = cross_validate(pipe, X_train, y_train, cv=cv, groups=groups,
                                 scoring='f1_weighted', n_jobs=-1)
         return scores['test_score'].mean()
@@ -433,12 +444,12 @@ def aplicar_modelos_ml_otimizados(
 ) -> pd.DataFrame:
     """
     Igual a aplicar_modelos_ml mas com Optuna para XGBoost e RandomForest.
-    Usa split por id_route e GroupKFold.
+    Usa split por id_route e StratifiedGroupKFold.
     """
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
     )
-    cv = GroupKFold(n_splits=cv_folds)
+    cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
     timeout_str = f", timeout={timeout}s" if timeout else ""
     print(f"  Tuning XGBoost com Optuna ({n_trials_xgb} trials{timeout_str})...")
@@ -468,12 +479,17 @@ def aplicar_modelos_ml_otimizados(
         ),
     }
 
+    n_minority_train = int(y_train.sum()) if y_train.mean() <= 0.5 else int((1 - y_train).sum())
+    n_minority_per_fold = max(1, n_minority_train * (cv_folds - 1) // cv_folds)
+    smote_k = min(5, n_minority_per_fold - 1)
+
     linhas = []
     for nome, clf in modelos.items():
-        pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=True)
+        pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=True, smote_k=smote_k)
+        f1_scorer = 'f1' if f1_average == 'binary' else f'f1_{f1_average}'
         cv_res = cross_validate(
             pipe, X_train, y_train, cv=cv, groups=groups_train,
-            scoring={'acc': 'accuracy', 'f1': f'f1_{f1_average}'},
+            scoring={'acc': 'accuracy', 'f1': f1_scorer},
         )
         cv_acc = cv_res['test_acc'].mean()
         cv_f1  = cv_res['test_f1'].mean()
@@ -520,209 +536,6 @@ def aplicar_modelos_ml_otimizados(
         position='h',
         column_format='lcccccc',
     )
-    return df_res
-
-
-# ISL - Índice de Segurança Lateral
-
-_ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
-_ISL_LABELS = ['Baixo', 'Médio', 'Alto']
-
-
-def treinar_modelo_isl(
-    df: pd.DataFrame,
-    plot_cm: bool = True,
-    random_state: int = 42,
-    test_size: float = 0.3,
-    cv_folds: int = 5,
-    pca_n_components=None,
-    isl_max_cap_percentil: int | None = 99,
-    outdir: str = 'results',
-) -> pd.DataFrame:
-    """
-    Treina modelos clássicos para prever a classe ISL (3 classes) antes da curva.
-
-    Target: ``isl_class`` codificado como ordinal  0=baixo / 1=medio / 2=alto.
-    isl_max_cap_percentil : remove outliers de B-spline/GPS (isl_max acima do percentil).
-    """
-    df_valid = df.dropna(subset=['isl_class', 'isl_max']).copy()
-
-    if isl_max_cap_percentil is not None:
-        cap = float(np.percentile(df_valid['isl_max'], isl_max_cap_percentil))
-        n_antes = len(df_valid)
-        df_valid = df_valid[df_valid['isl_max'] <= cap].copy()
-        print(f"  ISL — cap p{isl_max_cap_percentil}: {cap:.3f}  ({n_antes - len(df_valid)} amostras removidas)")
-
-    df_valid['_isl_y'] = df_valid['isl_class'].map(_ISL_ENCODE)
-    df_valid = df_valid.dropna(subset=['_isl_y'])
-    df_valid['_isl_y'] = df_valid['_isl_y'].astype(int)
-
-    counts = df_valid['_isl_y'].value_counts().sort_index()
-    label_str = ' | '.join(f'{_ISL_LABELS[k]}: {v}' for k, v in counts.items())
-    print(f"  ISL — amostras válidas: {len(df_valid)}  ({label_str})")
-
-    feature_cols = [c for c in colunas_features(df_valid) if c != '_isl_y']
-    X_train, X_test, y_train, y_test, groups_train = _split_rota_generico(
-        df_valid, feature_cols, target='_isl_y',
-        test_size=test_size, random_state=random_state,
-    )
-
-    # StratifiedGroupKFold: respeita as fronteiras de gravação (sem leakage por rota)
-    # e mantém a proporção das 3 classes em cada fold.
-    cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-
-    modelos = {
-        'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
-        'SVM':                 svm.SVC(kernel='linear', random_state=random_state),
-        'Árvore de Decisão':   DecisionTreeClassifier(random_state=random_state),
-        'Floresta Aleatória':  RandomForestClassifier(random_state=random_state),
-        'XGBoost':             XGBClassifier(
-            n_estimators=300, learning_rate=0.1, max_depth=6,
-            eval_metric='mlogloss', random_state=random_state,
-        ),
-        'Rede Neural (MLP)':   MLPClassifier(
-            activation='relu', solver='adam',
-            hidden_layer_sizes=(128, 64), max_iter=2000, random_state=random_state,
-        ),
-    }
-
-    linhas = []
-    for nome, clf in modelos.items():
-        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components, use_smote=True)
-
-        cv_res = cross_validate(
-            pipe, X_train, y_train, cv=cv, groups=groups_train,
-            scoring={'acc': 'accuracy', 'f1': 'f1_macro'},
-        )
-        cv_acc = cv_res['test_acc'].mean()
-        cv_f1  = cv_res['test_f1'].mean()
-
-        pipe.fit(X_train, y_train)
-        y_pred = pipe.predict(X_test)
-
-        acc  = accuracy_score(y_test, y_pred)
-        f1   = f1_score(y_test, y_pred, average='macro')
-        prec = precision_score(y_test, y_pred, average='macro', zero_division=0)
-        rec  = recall_score(y_test, y_pred, average='macro')
-
-        print(
-            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
-            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
-        )
-
-        if plot_cm:
-            classes_presentes = sorted(np.unique(np.concatenate([y_test, y_pred])))
-            labels = [_ISL_LABELS[c] for c in classes_presentes]
-            cm = confusion_matrix(y_test, y_pred, labels=classes_presentes)
-            plt.figure(figsize=(6, 5))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Oranges',
-                        xticklabels=labels, yticklabels=labels)
-            plt.title(f'ISL — {nome}')
-            plt.ylabel('Real')
-            plt.xlabel('Prevista')
-            os.makedirs(outdir, exist_ok=True)
-            plt.savefig(os.path.join(outdir, f'cm_{nome}.pdf'), bbox_inches='tight')
-            plt.close()
-
-        linhas.append({
-            'Classificador':    nome,
-            'CV Acc (média)':   cv_acc,
-            'CV F1 macro (md)': cv_f1,
-            'Acc (teste)':      acc,
-            'F1 macro (teste)': f1,
-            'Precisão (teste)': prec,
-            'Recall (teste)':   rec,
-        })
-
-    df_res = pd.DataFrame(linhas)
-    os.makedirs(outdir, exist_ok=True)
-    df_res.to_latex(
-        os.path.join(outdir, 'resultados.tex'),
-        float_format='%.3f',
-        index=False,
-        caption='Resultados da classificação do Índice de Segurança Lateral (ISL) — 3 classes (baixo/médio/alto), F1 macro, validação cruzada por rota.',
-        label='tab:isl_resultados',
-        position='h',
-        column_format='lcccccc',
-    )
-    return df_res
-
-
-# Baseline físico (sem aprendizado
-
-def avaliar_baseline_fisico(
-    df: pd.DataFrame,
-    random_state: int = 42,
-    test_size: float = 0.3,
-    isl_max_cap_percentil: int | None = 99,
-    outdir: str = 'results',
-) -> pd.DataFrame:
-    """
-    Baseline físico (sem treino), avaliado em conjunto de teste por rota com os
-    mesmos parâmetros de split dos modelos ML, para quantificar quanto o ML agrega
-    além da física pura.
-
-    - isl_class : predição = argmax(mc_p_baixo, mc_p_medio, mc_p_alto)  [Monte Carlo]
-    - isl_max   : ISL_phys = (v_pred_kinematica/3.6)² / (f4_raio_min · g · μ)
-    """
-    mc_cols = ['mc_p_baixo', 'mc_p_medio', 'mc_p_alto']
-
-    def _test_mask(d: pd.DataFrame) -> pd.Series:
-        base  = d['id_route'].astype(str).map(_base_route)
-        bases = list(set(base))
-        _, test_base = train_test_split(bases, test_size=test_size, random_state=random_state)
-        return base.isin(set(test_base))
-
-    linhas = []
-
-    # isl_class via argmax da simulação de Monte Carlo
-    if 'isl_class' in df.columns and all(c in df.columns for c in mc_cols):
-        d = df.dropna(subset=['isl_class', 'isl_max'] + mc_cols).copy()
-        if isl_max_cap_percentil is not None and len(d):
-            cap = float(np.percentile(d['isl_max'], isl_max_cap_percentil))
-            d = d[d['isl_max'] <= cap]
-        d = d[d[mc_cols].sum(axis=1) > 0]   # ignora linhas sem MC (raio ausente)
-        if len(d):
-            dt     = d[_test_mask(d)]
-            y_true = dt['isl_class'].map(_ISL_ENCODE).astype(int).values
-            y_pred = dt[mc_cols].values.argmax(axis=1)
-            acc = accuracy_score(y_true, y_pred)
-            f1  = f1_score(y_true, y_pred, average='macro', zero_division=0)
-            print(f"  [baseline físico] isl_class (argmax MC)  Acc: {acc:.3f}  F1-macro: {f1:.3f}  (n_teste={len(dt)})")
-            linhas.append({'Alvo': 'isl_class', 'Método': 'argmax(MC)',
-                           'Métrica 1': f'Acc={acc:.3f}', 'Métrica 2': f'F1m={f1:.3f}'})
-
-    # isl_max via fórmula física com velocidade prevista pela cinemática da janela
-    need = ['isl_max', 'v_pred_kinematica', 'f4_raio_min']
-    if all(c in df.columns for c in need):
-        d = df.dropna(subset=need).copy()
-        d = d[d['f4_raio_min'] > 0]
-        if isl_max_cap_percentil is not None and len(d):
-            cap = float(np.percentile(d['isl_max'], isl_max_cap_percentil))
-            d = d[d['isl_max'] <= cap]
-        if len(d):
-            dt       = d[_test_mask(d)]
-            isl_phys = (dt['v_pred_kinematica'].values / 3.6) ** 2 / (dt['f4_raio_min'].values * _G * _MU)
-            y_true   = dt['isl_max'].values
-            mae  = mean_absolute_error(y_true, isl_phys)
-            rmse = float(np.sqrt(mean_squared_error(y_true, isl_phys)))
-            r2   = r2_score(y_true, isl_phys)
-            print(f"  [baseline físico] isl_max (fórmula)  MAE: {mae:.3f}  RMSE: {rmse:.3f}  R²: {r2:.3f}  (n_teste={len(dt)})")
-            linhas.append({'Alvo': 'isl_max', 'Método': 'v_pred²/(R·g·μ)',
-                           'Métrica 1': f'MAE={mae:.3f}', 'Métrica 2': f'R²={r2:.3f}'})
-
-    df_res = pd.DataFrame(linhas)
-    if not df_res.empty:
-        os.makedirs(outdir, exist_ok=True)
-        df_res.to_latex(
-            os.path.join(outdir, 'baseline.tex'),
-            index=False,
-            caption='Baseline físico (sem aprendizado) — argmax da simulação de Monte Carlo '
-                    'para isl\\_class e fórmula do ISL para isl\\_max, avaliados no conjunto de '
-                    'teste por rota (mesmo split dos modelos ML).',
-            label='tab:baseline_fisico',
-            position='h',
-        )
     return df_res
 
 

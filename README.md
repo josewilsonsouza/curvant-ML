@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="images/curvantML.png" alt="CurvantML" width="400">
+  <img src="figures/curvantML.png" alt="CurvantML" width="400">
 </p>
 
 <p align="center">
@@ -37,39 +37,31 @@ cvt --preprocess
 Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de predição abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, `cvt` mostra a ajuda.
 
 ```bash
-# Predição — cada flag escolhe um alvo
 cvt --risk           # classifica a condução na curva em Segura/Risco
-cvt --isl            # classifica o ISL (3 classes) + baseline físico
 cvt --velocity       # prevê a velocidade crítica e deriva o ISL
-cvt --multitask      # MLP PyTorch: ISL + manobras juntos
 ```
 
-Os comandos abaixo **não** são predição: um inspeciona o modelo e os outros são modificadores/utilidades, combináveis com as flags de predição.
+Os comandos abaixo **não** são predição — são utilidades combináveis com as flags de predição.
 
 ```bash
-# Análise (não prevê, inspeciona)
-cvt --importance             # importância das features (XGBoost)
-
-# Modificadores e utilidades (combináveis com as flags de predição)
-cvt --risk --optimize        # + ajuste de hiperparâmetros (Optuna)
 cvt --velocity --rebuild     # ignora o cache e reprocessa as etapas 1–5
-cvt --isl --no-plot          # pula os gráficos (mais rápido)
+cvt --velocity --no-plot     # pula os gráficos (mais rápido)
 ```
 
-> **📝Nota**. Use `--rebuild` ao mudar parâmetros do `config.yaml` que afetam detecção ou extração de features.
+> Análises complementares do risco (importância de features e otimização Optuna) ficam em [`notebooks/analise_risco.ipynb`](notebooks/analise_risco.ipynb), fora da CLI.
+
+> **📝Nota**. Use `--rebuild` ao mudar parâmetros de detecção de curvas (`config.yaml`) ou de extração de features (`features.yaml > extracao`).
 
 As flags acima preveem o seguinte
 
 | Flag | Alvo/Target | Tipo |
 |---|---|---|
 | `--risk` | curva Segura/Risco (`manobra_combinado_curva`) | binário |
-| `--isl` | classe de ISL (baixo/médio/alto) + baseline físico | 3 classes |
 | `--velocity` | velocidade crítica `v_critica` (e ISL derivado pela física) | regressão |
-| `--multitask` | `isl_max` + as 4 manobras, num modelo só | regressão + binários |
 
 > **Direção atual do projeto:** o caminho mais promissor é o `--velocity`: prever a velocidade crítica e calcular o ISL pela física. É onde o modelo supera de fato um chute simples (o erro cai de ~11 para ~7 km/h sobre o baseline de persistência).
 
-A lista completa de alvos e das 49 features (agrupadas em F1–F5 + Monte Carlo), com o que cada coluna significa, está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**.
+A lista completa de alvos e features (agrupadas por tipo), com o que cada coluna significa, está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**. A seleção de quais features cada flag usa fica em **[features.yaml](features.yaml)** (whitelist por flag).
 
 Veja na imagem a seguir o fluxo de exeução das flags e os targets.
 
@@ -77,22 +69,19 @@ Veja na imagem a seguir o fluxo de exeução das flags e os targets.
 graph LR
     A([cvt]) --> B{Modo de<br/>Execução}
 
-    %% Preparação e Análise
+    %% Preparação
     B -->|Preparação| C[--preprocess] --> D[(data/)]
-    B -->|Análise| E[--importance] --> F[Feature Importance]
 
     %% Modelagem Principal
     B -->|Modelagem| G((Alvos))
 
     G -->|--risk| H[Classificação Binária<br/>Segura/Risco]
-    G -->|--isl| I[Classificação Multiclasse<br/>Níveis de ISL]
     G -->|--velocity| J[Regressão Temporal<br/>v_critica]
-    G -->|--multitask| K[Rede Neural Multi-head<br/>ISL + 4 Manobras]
 
-    H & I & J & K --> M[(results/< alvo >/)]
+    H & J --> M[(results/< alvo >/)]
 
     %% Modificadores
-    N[[Flags Utilitárias]] -.->|--optimize<br/>--no-plot<br/>--rebuild| G
+    N[[Flags Utilitárias]] -.->|--no-plot<br/>--rebuild| G
 ```
 
 ## Pipeline
@@ -127,16 +116,18 @@ Para cada segmento contíguo de `curva=True`, três critérios independentes ger
 
 ## Modelos
 
-- **Tabular** (`--risk`, `--isl`): LogisticRegression, SVM, DecisionTree, RandomForest, XGBoost, MLP. Pipeline `SMOTE -> StandardScaler -> [PCA] -> modelo`, com split e validação cruzada **por rota** (`GroupKFold`/`StratifiedGroupKFold`) para não vazar entre gravações.
-- **Optuna** (`--risk --optimize`): tuning bayesiano de XGBoost, RandomForest e LogReg.
+- **Tabular** (`--risk`): LogisticRegression, SVM, DecisionTree, RandomForest, XGBoost, MLP. Pipeline `SMOTE -> StandardScaler -> [PCA] -> modelo`, com split e validação cruzada **por rota** (`GroupKFold`/`StratifiedGroupKFold`) para não vazar entre gravações.
+- **Optuna** (`notebooks/analise_risco.ipynb`): tuning bayesiano de XGBoost, RandomForest e LogReg — análise complementar, fora da CLI.
 - **Temporais** (`--velocity`): operam sobre a sequência bruta da janela pré-curva (não estatísticas). Modelos em `temporais.model`: `linear`, `rf`, `xgboost` (tabulares sobre estatísticas da sequência) e `mlp`, `lstm`, `gru`, `cnn1d` (neurais).
-- **Multitask** (`--multitask`): MLP PyTorch com um encoder compartilhado e 5 heads.
 
-Sob `--isl` e `--velocity`, o pipeline reporta um baseline sem aprendizado ao lado dos modelos — a simulação de Monte Carlo (argmax para `isl_class`) e a persistência (`v_critica` ~ velocidade de aproximação). Serve para medir o quanto o ML realmente agrega.
+Sob `--velocity`, o pipeline reporta um baseline sem aprendizado ao lado dos modelos — a persistência (`v_critica` ~ velocidade de aproximação). Serve para medir o quanto o ML realmente agrega.
 
-## Configuração (`config.yaml`)
+## Configuração
 
-Tudo num arquivo só, com cada seção correspondendo a um módulo. As principais:
+Dois arquivos na raiz: **`config.yaml`** (parâmetros de modelo/pipeline) e **`features.yaml`**
+(quais features cada flag usa — whitelist por flag).
+
+`config.yaml`, cada seção correspondendo a um módulo. As principais:
 
 | Seção | Para que serve |
 |---|---|
@@ -144,12 +135,15 @@ Tudo num arquivo só, com cada seção correspondendo a um módulo. As principai
 | `preprocessing` | limpeza dos dados brutos |
 | `curve_detection` | B-spline, `limite_raio`, classes DNIT |
 | `risk_measures` | limiares dos critérios de risco (Kamm, lateral, zigue-zague) |
-| `features` | janela pré-curva, `lead_gap`, sensores |
 | `montecarlo` | simulação de probabilidade de ISL |
-| `ml` | parâmetros compartilhados dos modelos (split, CV, PCA, cap de outliers) |
-| `optuna` | nº de trials do tuning |
-| `multitarefa` | hiperparâmetros do MLP PyTorch |
+| `ml` | parâmetros compartilhados dos modelos (split, CV, PCA) |
+| `optuna` | nº de trials do tuning (usado pela análise em `notebooks/analise_risco.ipynb`) |
 | `temporais` | modelos, alvo e hiperparâmetros do `--velocity` |
+
+`features.yaml` tem `extracao:` (parâmetros da janela pré-curva: `janela_distancia`, `lead_gap`,
+`vars_sensor`) e `flags:` com a lista de features por flag — `risk` (lista chapada),
+`importance` (`herda: risk`) e `velocity` (`sensors` + `scalares_extras`). Whitelist explícita:
+só entra no modelo o que estiver listado.
 
 As constantes físicas (`g`, `μ`, limiares de ISL) ficam centralizadas em [curvant/constants.py](curvant/constants.py), que lê `μ` e os limiares da seção `physics` do config.
 

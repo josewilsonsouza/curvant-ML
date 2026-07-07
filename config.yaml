@@ -1,4 +1,4 @@
-# CurvantML — fonte única de todos os parâmetros.
+# CurvantML
 huggingface:
   dataset_id: jwsouza13/routes_ML_inmetro
 
@@ -12,10 +12,10 @@ physics:
 # Limpeza dos dados brutos.  Flag: --preprocess
 preprocessing:
   accel_limite: 5.0              # m/s² - clip de spikes do acelerômetro
-  vel_max: 150.0                 # km/h - velocidade máxima plausível
-  vel_min_parado: 2.0            # km/h - abaixo disso o carro é considerado parado
+  vel_max: 200.0                 # km/h - velocidade máxima plausível
+  vel_min_parado: 1.0            # km/h - abaixo disso o carro é considerado parado
   max_parados_consecutivos: 3    # pontos parados consecutivos mantidos
-  max_gap: 30.0                  # s - gap temporal que divide um trajeto em sub-trajetos
+  max_gap: 120.0                  # s - gap temporal que divide um trajeto em sub-trajetos
   min_pontos_segmento: 10        # pontos mínimos por sub-trajeto
 
 # Detecção de curvas: B-spline -> curvatura -> raio -> classe DNIT.
@@ -26,6 +26,7 @@ curve_detection:
                      # ~20% dos rótulos de curva.
   limite_raio: 150   # m - raio máximo para marcar curva=True
   raio_min: 5.0      # m - clip do raio antes do ISL; evita ISL -> inf por ruído de GPS
+
   # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010); D = 1145.92/R
   dnit:
     muito_fechada: 50    # R <= 50 m
@@ -34,8 +35,6 @@ curve_detection:
     aberta:       500    # R <= 500 m
     # suave: R > 500 m
 
-# Caracterização de risco por curva: produz os rótulos de manobra (Segura/Risco).
-# Módulo: curvant/driving/risk_measures.py
 risk_measures:
   kamm_alpha: 0.7              # alpha para o critério de Kamm
                                # 0.7 -> limiar = 0.7 × 0.6 × 9.81 ~ 4.12 m/s²
@@ -45,46 +44,9 @@ risk_measures:
     limiar_ctp: 0.3            # m/s² - aceleração centrípeta mínima (ctp_accel = v²/R)
     min_mudancas: 3            # nº de alternâncias para caracterizar zigue-zague
 
-# Extração de features por curva, a partir da janela pré-curva.
-# A janela termina em (entrada_da_curva - lead_gap) e começa janela_distancia metros antes.
-# Modo dinâmico (janela_distancia: null): d = v² / (2 × janela_acel_confort)
-#   Exemplo: 100 km/h (27.8 m/s) -> d = 27.8² / (2 × 2.5) ~ 154 m
-#            60 km/h  (16.7 m/s) -> d = 16.7² / (2 × 2.5) ~  56 m
-#   Limitado entre janela_distancia_min e janela_distancia_max.
-features:
-  janela_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × janela_acel_confort)
-  janela_acel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
-  janela_distancia_min: 5        # m - tamanho mínimo da janela dinâmica
-  janela_distancia_max: 400      # m - tamanho máximo da janela dinâmica
-  lead_gap: 30                   # m - folga antes da entrada (predição antecipada): a janela
-                                 # termina em (entrada - lead_gap). 0 = sem folga.
-  vars_sensor:                   # sensores usados nas estatísticas do Grupo 1 (veja docs/TARGETS_E_FEATURES.md)
-    - vehicle_speed
-    - accel_x
-    - accel_y
-    #- engine_rpm
-
-  desativar:                     # remova o # das linhas abaixo para desativar features
-    # - vehicle_speed_cv
-    # - accel_x_cv
-    # - accel_y_cv
-    # - vehicle_speed_mean_tarde
-    # - accel_x_mean_tarde
-    # - accel_y_mean_tarde
-    # - vehicle_speed_slope_tarde
-    # - accel_x_slope_tarde
-    # - accel_y_slope_tarde
-    # - jerk_x_max
-    # - jerk_x_std
-    # - prev_isl_max
-    # - n_curvas_antes
-    # - n_perigo_accel_janela
-    # - n_perigo_lateral_janela
-
-# Simulação de Monte Carlo (roda dentro da extração de features).
 # Produz mc_p_baixo / mc_p_medio / mc_p_alto (probabilidade de cada classe de ISL).
 montecarlo:
-  n_sim: 1000        # cenários por curva
+  n_sim: 1000
   k_ultimos: 20      # últimos pontos da janela usados p/ a tendência de velocidade
   sigma_min: 5       # desvio mínimo em km/h (incerteza do sensor)
 
@@ -92,58 +54,28 @@ montecarlo:
 # ===================== Modelos =====================
 
 # Parâmetros compartilhados pelos modelos tabulares.
-# Flags: --risk | --isl  (e --risk --optimize)
+# Flag: --risk  (também usado pela análise em notebooks/analise_risco.ipynb)
 ml:
   random_state: 42
   test_size: 0.3
   cv_folds: 5
   pca_n_components: null       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
-  isl_max_cap_percentil: 95    # remove curvas com isl_max acima deste percentil (ruído); null = sem filtro
 
-# Ajuste de hiperparâmetros (XGBoost + RandomForest + LogReg).  Flag: --risk --optimize
+# Ajuste de hiperparâmetros (XGBoost + RandomForest + LogReg).
+# Usado pela análise complementar em notebooks/analise_risco.ipynb (etapa_ml_otimizado).
 optuna:
   n_trials_xgb: 50
   n_trials_rf: 30
   n_trials_lr: 20
   timeout: 300        # s máximos por otimização
 
-# MLP multi-tarefa PyTorch: prevê isl_max + as 4 manobras de uma vez.  Flag: --multitask
-multitarefa:
-  epochs: 400
-  batch_size: 32
-  lr: 0.005
-  dropout: 0.5
-  weight_decay: 0.01
-
 # Previsão da velocidade crítica sobre a série temporal pré-curva.  Flag: --velocity
-# Módulo: curvant/models/temporais.py
+
 temporais:
-  # Modelos disponíveis: gru | lstm | cnn1d | mlp | linear | rf | xgboost
-  model: [mlp]
+  model: [lstm]                #opções: gru | lstm | cnn1d | mlp | linear | rf | xgboost
   task: auto                   # auto (detecta pelo target) | regression | classification
 
   target: v_critica            # v_critica | isl_max | isl_mean | isl_class (classificação)
-  sensors:
-    - vehicle_speed
-    - accel_x
-    - accel_y
-    #- engine_rpm
-  scalares_extras:             # números fixos por curva, adicionados como canais constantes
-      - janela_raio_min          # F3 - raio na janela pré-curva
-      - janela_raio_mean
-      - janela_raio_last
-      - jerk_y_max               # F2 - pico de jerk lateral
-      - n_perigo_accel_janela    # F2 - eventos acima do círculo de Kamm
-      - n_perigo_lateral_janela  # F2 - eventos acima do limiar lateral
-      - f4_raio_min              # F4 - geometria real da curva à frente
-      - f4_raio_mean
-      - f4_dnit_num
-      - mc_p_baixo               # MC - probabilidades de classe de ISL
-      - mc_p_medio
-      - mc_p_alto
-      - mean_isl_antes           # F5 - ISL médio das curvas anteriores
-      - prev_isl_max             # F5 - ISL máximo da curva imediatamente anterior
-      - n_curvas_antes
 
   target_cap_percentil: 99     # remove extremos acima deste percentil do target (null = sem filtro)
   n_timesteps: 50              # comprimento fixo após reamostragem da janela
@@ -151,7 +83,7 @@ temporais:
   batch_size: 32
   lr: 0.005
   dropout: 0.3
-  early_stopping_patience: 100  # épocas sem melhora na val_loss -> parar
+  early_stopping_patience: 100 # épocas sem melhora na val_loss -> parar
   val_size: 0.15               # fração do treino usada para validação
   weight_decay: 0.01           # L2 no Adam
   hidden_size: 64              # GRU / LSTM

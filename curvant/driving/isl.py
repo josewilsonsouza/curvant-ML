@@ -67,16 +67,3 @@ def calcular_isl_por_curva(
         })
 
     return pd.DataFrame(registros)
-
-
-def resumo_isl(df_isl: pd.DataFrame) -> None:
-    """Imprime distribuição das classes ISL e estatísticas básicas."""
-    contagem = df_isl['isl_class'].value_counts().reindex(['baixo', 'medio', 'alto'], fill_value=0)
-    print("Distribuição ISL por curva:")
-    for classe, n in contagem.items():
-        pct = n / len(df_isl) * 100
-        print(f"  {classe:8s}: {n:4d} ({pct:.1f}%)")
-    extra = ""
-    if 'isl_p95' in df_isl.columns:
-        extra = f"  p95: {df_isl['isl_p95'].mean():.3f}"
-    print(f"  ISL_max — média: {df_isl['isl_max'].mean():.3f}{extra}  máx: {df_isl['isl_max'].max():.3f}")
