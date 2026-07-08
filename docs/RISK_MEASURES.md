@@ -14,11 +14,11 @@ $$a_{\text{total}}(t) = \sqrt{a_x(t)^2 + a_y(t)^2}$$
 
 O critério dispara se, em qualquer instante, essa soma passa de uma fração $\alpha$ do limite:
 
-$$\max_t \; a_{\text{total}}(t) \;>\; \alpha \,\mu\, g$$
+$$\max_t a_{\text{total}}(t) > \alpha \mu g$$
 
 Com os valores padrão ($\alpha = 0{,}7$, $\mu = 0{,}6$, $g = 9{,}81$):
 
-$$\text{limiar} = 0{,}7 \times 0{,}6 \times 9{,}81 \;\approx\; 4{,}12 \ \text{m/s}^2$$
+$$\text{limiar} = 0{,}7 \times 0{,}6 \times 9{,}81 \approx 4{,}12 \ \text{m/s}^2$$
 
 O $\alpha = 0{,}7$ é uma **margem de segurança**: alarma já aos 70% do limite real, capturando a condução perto da borda antes da derrapagem de fato.
 
@@ -26,7 +26,7 @@ O $\alpha = 0{,}7$ é uma **margem de segurança**: alarma já aos 70% do limite
 
 Dispara quando há pico de aceleração lateral alto **e** a curva é geometricamente relevante:
 
-$$\max_t \; |a_y(t)| \;>\; \tau_{\text{lat}} \quad\textbf{e}\quad R \le 500m$$
+$$\max_t \; |a_y(t)| > \tau_{\text{lat}} \quad\textbf{e}\quad R \le 500m$$
 
 com $\tau_{\text{lat}} = 2{,}0 \ \text{m/s}^2$ por padrão. O $R$ evita que troca de faixa ou de buracos em retas seja contada como curva perigosa.
 
