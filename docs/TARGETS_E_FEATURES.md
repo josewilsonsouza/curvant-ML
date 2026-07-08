@@ -55,17 +55,17 @@ As estatísticas básicas dos sensores na janela antes da curva. Para `vehicle_s
 
 ### Grupo 2 - Dinâmica derivada da aproximação (11 colunas)
 - `jerk_x_max`, `jerk_x_std`, `jerk_y_max`, `jerk_y_std`: o jerk é a variação brusca da aceleração.
-- `n_perigo_accel_janela`, `n_perigo_lateral_janela`: quantas vezes a aceleração passou de um limite na janela.
-- `janela_abs_accel_max`: máximo de $\sqrt{(a_x^2+a_y^2)}$ na janela pré-curva
+- `n_perigo_accel_precurva`, `n_perigo_lateral_precurva`: quantas vezes a aceleração passou de um limite na janela.
+- `precurva_abs_accel_max`: máximo de $\sqrt{(a_x^2+a_y^2)}$ na janela pré-curva
 - `distance_car_curve`: o comprimento da janela pré-curva (a distância coberta pela aproximação). ⚠️ **Não é** a distância até a curva, veja a nota abaixo.
-- `janela_bearing_std`: desvio padrão das variações de bearing (Δθ) na janela pré-curva
-- `janela_bearing_range`: amplitude total do bearing na janela (max − min)
-- `janela_n_mudancas_dir`: contagem de alternâncias de sinal de Δbearing (|Δθ| > 15°) na janela
+- `precurva_bearing_std`: desvio padrão das variações de bearing (Δθ) na janela pré-curva
+- `precurva_bearing_range`: amplitude total do bearing na janela (max − min)
+- `precurva_n_mudancas_dir`: contagem de alternâncias de sinal de Δbearing (|Δθ| > 15°) na janela
 
 > A variável `distance_car_curve` é o tamanho da janela, em `m` de aproximação. A distância da ponta da janela até a entrada da curva é fixa e vale `lead_gap`  (**30 m** default). Só no `--velocity` existe uma variável que mede a distância que falta para a curva a cada instante: `distancia_restante` (ver Seção 4).
 
 ### Grupo 3 - Geometria da janela pré-curva (3 colunas)
-`janela_raio_min`, `janela_raio_mean`, `janela_raio_last`: o raio da pista durante a aproximação, pois mede o quanto a estrada já estava curvando antes da curva-alvo.
+`precurva_raio_min`, `precurva_raio_mean`, `precurva_raio_last`: o raio da pista durante a aproximação, pois mede o quanto a estrada já estava curvando antes da curva-alvo.
 
 ### Grupo 4 - Geometria da curva à frente (3 colunas)
 `f4_raio_min`, `f4_raio_mean`, `f4_dnit_num`: o raio real da curva que vem pela frente e a sua classe oficial (seguindo o DNIT). Isso sob a suposição de que a rota é conhecida de antemão.

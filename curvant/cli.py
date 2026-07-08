@@ -36,6 +36,7 @@ def _cache_valido(cache_path: str, data_path: str) -> bool:
         return False
     return os.path.getmtime(cache_path) >= os.path.getmtime(data_path)
 
+
 def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: bool = False):
     """Carrega features do cache ou reconstrói o pipeline (etapas 1-5)."""
     candidates = [
@@ -89,6 +90,7 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
     print(f"  [cache] Intermediários salvos em {_CACHE_ANALYSIS} e {_CACHE_FEATURES}")
     return df_analysis, features_df
 
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description='CurvantML - escolha o que prever com uma flag de target.',
@@ -103,6 +105,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--input',  type=str, default=None, help='Raw file to clean; used with --preprocess')
     parser.add_argument('--output', type=str, default=None, help='Output clean file; used with --preprocess')
     return parser
+
 
 def main() -> None:
     parser = _build_parser()

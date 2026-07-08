@@ -90,10 +90,10 @@ def _executar_pipeline(data_path: str, cfg: dict, feat_cfg: dict):
     ex = feat_cfg["extracao"]
     features_df = extrair_features(
         df_at,
-        janela_distancia=ex.get("janela_distancia"),
-        janela_acel_confort=ex.get("janela_acel_confort", 2.5),
-        janela_distancia_min=ex.get("janela_distancia_min", 10.0),
-        janela_distancia_max=ex.get("janela_distancia_max", 200.0),
+        precurva_distancia=ex.get("precurva_distancia"),
+        precurva_desacel_confort=ex.get("precurva_desacel_confort", 2.5),
+        precurva_distancia_min=ex.get("precurva_distancia_min", 10.0),
+        precurva_distancia_max=ex.get("precurva_distancia_max", 200.0),
         lead_gap=ex.get("lead_gap", 0.0),
         vars_sensor=ex.get("vars_sensor"),
     )

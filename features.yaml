@@ -1,13 +1,13 @@
 # Ao criar uma feature nova em curvant/driving/features.py, adicione-a à flag
 
-# Extração de features por curva, a partir da janela pré-curva. A janela termina em (entrada_da_curva - lead_gap) e começa janela_distancia metros antes.
-# Modo dinâmico (janela_distancia: null): d = v² / (2 × janela_acel_confort), com clip
-# entre janela_distancia_min e janela_distancia_max.
+# Extração de features por curva, a partir da janela pré-curva. A janela termina em (entrada_da_curva - lead_gap) e começa precurva_distancia metros antes.
+# Modo dinâmico (precurva_distancia: null): d = v² / (2 × precurva_desacel_confort), com clip
+# entre precurva_distancia_min e precurva_distancia_max.
 extracao:
-  janela_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × janela_acel_confort)
-  janela_acel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
-  janela_distancia_min: 20       # m - tamanho mínimo da janela dinâmica
-  janela_distancia_max: 400      # m - tamanho máximo da janela dinâmica
+  precurva_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × precurva_desacel_confort)
+  precurva_desacel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
+  precurva_distancia_min: 20       # m - tamanho mínimo da janela dinâmica
+  precurva_distancia_max: 400      # m - tamanho máximo da janela dinâmica
   lead_gap: 30                   # m - folga antes da entrada (predição antecipada); 0 = sem folga
   vars_sensor:                   # sensores cujas estatísticas viram features na janela pré-curva
     - vehicle_speed
@@ -65,16 +65,16 @@ flags:
       - jerk_y_max
       - jerk_y_std
       - distance_car_curve
-      - n_perigo_accel_janela
-      - janela_abs_accel_max
-      - n_perigo_lateral_janela
-      - janela_bearing_std
-      - janela_n_mudancas_dir
-      - janela_bearing_range
+      - n_perigo_accel_precurva
+      - precurva_abs_accel_max
+      - n_perigo_lateral_precurva
+      - precurva_bearing_std
+      - precurva_n_mudancas_dir
+      - precurva_bearing_range
       # raio da trajetória na janela pré-curva
-      - janela_raio_min
-      - janela_raio_mean
-      - janela_raio_last
+      - precurva_raio_min
+      - precurva_raio_mean
+      - precurva_raio_last
       - throttle_off_distance
       # geometria real da curva à frente
       - f4_raio_min
@@ -107,12 +107,12 @@ flags:
       - engine_rpm
       - accelerator_pedal_pos_d
     scalares_extras:
-      - janela_raio_min
-      - janela_raio_mean
-      - janela_raio_last
+      - precurva_raio_min
+      - precurva_raio_mean
+      - precurva_raio_last
       - jerk_y_max
-      - n_perigo_accel_janela
-      - n_perigo_lateral_janela
+      - n_perigo_accel_precurva
+      - n_perigo_lateral_precurva
       - f4_raio_min
       - f4_raio_mean
       - f4_dnit_num

@@ -22,138 +22,86 @@ Clone este repositório:
 git clone https://github.com/josewilsonsouza/curvant-ml.git
 cd curvant-ml
 ```
-Execute a instalação:
+Instalando:
 
 ```powershell
 pip install -e .
 ```
 
-Agora execute a limpeza dos dados, executando
+Execute a limpeza dos dados, fazendo
 
 ```bash
 cvt --preprocess
 ```
 
-Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de predição abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<alvo>/`. Sem flag, `cvt` mostra a ajuda.
+Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de predição abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<flag>/`. Sem flag, `cvt` mostra a ajuda.
 
 ```bash
-cvt --risk           # classifica a condução na curva em Segura/Risco
-cvt --velocity       # prevê a velocidade crítica e deriva o ISL
+cvt --risk           # previsão de Segura/Risco
+cvt --velocity       # prevê a velocidade crítica e calcula o ISL
 ```
 
-Os comandos abaixo **não** são predição — são utilidades combináveis com as flags de predição.
+Outros comandos úteis são:
 
 ```bash
-cvt --velocity --rebuild     # ignora o cache e reprocessa as etapas 1–5
-cvt --velocity --no-plot     # pula os gráficos (mais rápido)
+cvt --velocity --rebuild     # ignora o cache e reprocessa os dados
+cvt --velocity --no-plot     # pula geração de gráficos
 ```
+> [!TIP]
+> Use `--rebuild` ao mudar parâmetros de detecção de curvas (`config.yaml`) ou de extração de features (`features.yaml > extracao`).
 
-> Análises complementares do risco (importância de features e otimização Optuna) ficam em [`notebooks/analise_risco.ipynb`](notebooks/analise_risco.ipynb), fora da CLI.
-
-> **📝Nota**. Use `--rebuild` ao mudar parâmetros de detecção de curvas (`config.yaml`) ou de extração de features (`features.yaml > extracao`).
-
-As flags acima preveem o seguinte
-
-| Flag | Alvo/Target | Tipo |
-|---|---|---|
-| `--risk` | curva Segura/Risco (`manobra_combinado_curva`) | binário |
-| `--velocity` | velocidade crítica `v_critica` (e ISL derivado pela física) | regressão |
-
-> **Direção atual do projeto:** o caminho mais promissor é o `--velocity`: prever a velocidade crítica e calcular o ISL pela física. É onde o modelo supera de fato um chute simples (o erro cai de ~11 para ~7 km/h sobre o baseline de persistência).
-
-A lista completa de alvos e features (agrupadas por tipo), com o que cada coluna significa, está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**. A seleção de quais features cada flag usa fica em **[features.yaml](features.yaml)** (whitelist por flag).
-
-Veja na imagem a seguir o fluxo de exeução das flags e os targets.
-
-```mermaid
-graph LR
-    A([cvt]) --> B{Modo de<br/>Execução}
-
-    %% Preparação
-    B -->|Preparação| C[--preprocess] --> D[(data/)]
-
-    %% Modelagem Principal
-    B -->|Modelagem| G((Alvos))
-
-    G -->|--risk| H[Classificação Binária<br/>Segura/Risco]
-    G -->|--velocity| J[Regressão Temporal<br/>v_critica]
-
-    H & J --> M[(results/< alvo >/)]
-
-    %% Modificadores
-    N[[Flags Utilitárias]] -.->|--no-plot<br/>--rebuild| G
-```
-
+A mudança de parâmetros das configurações podem ser feitas no **`config.yaml`** e, para o gerenciamento das features, o arquivo **`features.yaml`**. A lista completa de targets e features está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**.
 ## Pipeline
 
 O projeto segue o seguite pipeline.
 
 ```mermaid
 graph LR
-    A[(Dados Brutos)] --> B[utils/preprocessing.py]
-    B --> C[driving/curve_detection.py]
-    C --> D[driving/risk_measures.py]
-    D --> E[driving/features.py]
-    E --> F{{models/*.py}}
+    A[(Dados)] --> B[Processamento]
+    B --> C[Detecção de curvas]
+    C --> D[Caracterização de risco]
+    D --> E[Extração de features]
+    E --> F[Modelos]
 ```
 
+As features saem de uma janela espacial logo antes da curva (`precurva_distancia`). O tamanho é fixo ou dinâmico pela distância de frenagem ideal,  `[precurva_distancia_min, precurva_distancia_max]`. A janela termina `lead_gap` metros **antes** da entrada (predição antecipada) e exclui pontos de uma curva anterior.
 
-### Janela pré-curva
-
-As features saem de uma janela espacial logo antes da curva. O tamanho é fixo (`features.janela_distancia`, 50 m) ou dinâmico pela distância de frenagem de conforto `d = v̄²/(2·a_c)`, com clip em ` janela_distancia_min, janela_distancia_max]`. A janela termina `lead_gap` metros **antes** da entrada (predição antecipada) e exclui pontos de uma curva anterior.
-
-### Caracterização de risco (3 critérios)
+### Caracterização de risco
 
 Para cada segmento contíguo de `curva=True`, três critérios independentes geram os rótulos:
 
-| Critério | Coluna | Definição |
-|---|---|---|
-| Limite de aderência (Kamm) | `manobra_accel_curva` | $\max_t \sqrt{a_x^2 + a_y^2} > \alpha\,\mu\,g$ |
-| Aceleração lateral | `manobra_lateral_curva` | $\max_t \lvert a_y \rvert > 2{,}0$ e curva DNIT $\ge$ aberta |
-| Zigue-zague | `manobra_ziguezague_curva` | $\ge 3$ mudanças de bearing alternadas com aceleração centrípeta |
+| Critério | Definição |
+|---|---|
+| Limite de aderência| $\max_t \sqrt{a_x^2 + a_y^2} > \alpha\,\mu\,g$ |
+| Aceleração lateral | $\max_t \lvert a_y \rvert > 2 $ e curva DNIT $\ge$ aberta |
+| Zigue-zague | $\ge 3$ mudanças de bearing alternadas com aceleração centrípeta |
 
 `manobra_combinado_curva` é o OR dos três. Detalhes desses critérios estão em [RISK_MEASURES](docs/RISK_MEASURES.md).
 
-## Modelos
+### Modelos
 
-- **Tabular** (`--risk`): LogisticRegression, SVM, DecisionTree, RandomForest, XGBoost, MLP. Pipeline `SMOTE -> StandardScaler -> [PCA] -> modelo`, com split e validação cruzada **por rota** (`GroupKFold`/`StratifiedGroupKFold`) para não vazar entre gravações.
-- **Optuna** (`notebooks/analise_risco.ipynb`): tuning bayesiano de XGBoost, RandomForest e LogReg — análise complementar, fora da CLI.
-- **Temporais** (`--velocity`): operam sobre a sequência bruta da janela pré-curva (não estatísticas). Modelos em `temporais.model`: `linear`, `rf`, `xgboost` (tabulares sobre estatísticas da sequência) e `mlp`, `lstm`, `gru`, `cnn1d` (neurais).
-
-Sob `--velocity`, o pipeline reporta um baseline sem aprendizado ao lado dos modelos — a persistência (`v_critica` ~ velocidade de aproximação). Serve para medir o quanto o ML realmente agrega.
-
-## Configuração
-
-Dois arquivos na raiz: **`config.yaml`** (parâmetros de modelo/pipeline) e **`features.yaml`**
-(quais features cada flag usa — whitelist por flag).
-
-`config.yaml`, cada seção correspondendo a um módulo. As principais:
-
-| Seção | Para que serve |
-|---|---|
-| `physics` | constantes do ISL: `mu` (atrito) e os limiares `isl_baixo`/`isl_alto` |
-| `preprocessing` | limpeza dos dados brutos |
-| `curve_detection` | B-spline, `limite_raio`, classes DNIT |
-| `risk_measures` | limiares dos critérios de risco (Kamm, lateral, zigue-zague) |
-| `montecarlo` | simulação de probabilidade de ISL |
-| `ml` | parâmetros compartilhados dos modelos (split, CV, PCA) |
-| `optuna` | nº de trials do tuning (usado pela análise em `notebooks/analise_risco.ipynb`) |
-| `temporais` | modelos, alvo e hiperparâmetros do `--velocity` |
-
-`features.yaml` tem `extracao:` (parâmetros da janela pré-curva: `janela_distancia`, `lead_gap`,
-`vars_sensor`) e `flags:` com a lista de features por flag — `risk` (lista chapada),
-`importance` (`herda: risk`) e `velocity` (`sensors` + `scalares_extras`). Whitelist explícita:
-só entra no modelo o que estiver listado.
-
-As constantes físicas (`g`, `μ`, limiares de ISL) ficam centralizadas em [curvant/constants.py](curvant/constants.py), que lê `μ` e os limiares da seção `physics` do config.
+- **Tabular** (`--risk`): 
+  - Logistic Regression
+  - Decision Tree
+  - Random Forest
+  - XGBoost
+  - SVM
+  - MLP
+- **Temporal** (`--velocity`): operam sobre a sequência bruta da janela pré-curva
+  - Regressão Linear
+  - Random Forest
+  - XGBoost
+  - MLP
+  - Long Short-Term Memory (LSTM)
+  - Gated Recurrent Unit (GRU)
+  - Rede Neural Convolucional (CNN)
 
 ## Dados
-
-Dataset público no HuggingFace: [`jwsouza13/routes_ML_inmetro`](https://huggingface.co/datasets/jwsouza13/routes_ML_inmetro). Os dados foram coletados pela equipe Lainf do Inmetro.
+Os dados utilizados no projeto foram coletadas em diversos cenários, os datasets brutos estão no repositório HuggingFace: [`jwsouza13/routes_ML_inmetro`](https://huggingface.co/datasets/jwsouza13/routes_ML_inmetro). Os dados foram coletados pela equipe Lainf do Inmetro.
 
 | Conjunto | Veículo | Trecho | Local |
 |---|---|---|---|
 | ELETRONUCLEAR | Spin / Van | Rio de Janeiro | `eletronuclear` |
 | RJ-DF | Nivus | Rio de Janeiro -> Brasília | `rjdf` |
 | SERRA | Jetta | trecho serrano | `serra` |
-| RJMGBA / JANEIRO | — | rotas adicionais | `rjmgba`, `janeiro` |
+| RJMGBA / JANEIRO | - | rotas adicionais | `rjmgba`, `janeiro` |

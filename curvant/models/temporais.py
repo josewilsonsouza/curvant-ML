@@ -511,7 +511,7 @@ def _treinar_um_neural(
     if len(loader) == 0:
         raise ValueError(
             f"DataLoader vazio após ajuste ({len(X_tr)} amostras). "
-            "Para --ts, janela_distancia deve ser >= 50 m para garantir sequências válidas."
+            "Para --ts, precurva_distancia deve ser >= 50 m para garantir sequências válidas."
         )
 
     if model_type in ('gru', 'lstm'):
