@@ -47,7 +47,7 @@ O critério dispara se ocorrerem pelo menos `min_mudancas` eventos que alternam 
 
 ## 3. Combinação e rótulo final
 
-$$\texttt{manobra-combinado} = \texttt{manobra-accel} \;\lor\; \texttt{manobra-lateral} \;\lor\; \texttt{manobra-ziguezague}$$
+$$\texttt{manobra-combinado} = \texttt{manobra-accel} \lor \texttt{manobra-lateral} \lor \texttt{manobra-ziguezague}$$
 
 A coluna `conducao` é o mesmo resultado em texto: `'Perigosa'` se combinado, senão `'Segura'`.
 
