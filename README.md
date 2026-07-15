@@ -31,21 +31,46 @@ pip install -e .
 Execute a limpeza dos dados, fazendo
 
 ```bash
-cvt --preprocess
+cvt preprocess
 ```
 
-Implementamos algumas variáveis que são de interesse prever antes de entrar na curva. As flags de predição abaixo escolhem o que prever; cada uma escreve seus resultados em `results/<flag>/`. Sem flag, `cvt` mostra a ajuda.
+## Uso
+
+O comando tem **dois eixos**: a **representação** da entrada e o **alvo**.
+
+```
+cvt <repr> <alvo>
+```
+
+A **representação** decide o que o modelo enxerga de cada curva:
+
+- **`tab`**: as features já agregadas por curva (um vetor de números: médias, máximos, jerk, geometria).
+- **`seq`**: a série temporal bruta da janela pré-curva (50 instantes de sensores).
+
+O **alvo** decide o que se prevê: `risk` (Segura ou Risco), `isl` (a faixa de ISL) ou `velocity` (a velocidade crítica).
+
+Os dois eixos são independentes, então o mesmo alvo roda nas duas representações. É assim que se compara se a série bruta traz alguma coisa além das features agregadas:
+
+|  | `risk` | `isl` | `velocity` |
+|---|---|---|---|
+| **`tab`** | `cvt tab risk` | `cvt tab isl` | `cvt tab velocity` |
+| **`seq`** | `cvt seq risk` | `cvt seq isl` | `cvt seq velocity` |
+
+Cada célula escreve em `results/<repr>/<alvo>/`. Sem subcomando, `cvt` mostra a ajuda.
 
 ```bash
-cvt --risk           # previsão de Segura/Risco
-cvt --velocity       # prevê a velocidade crítica e calcula o ISL
+cvt tab risk         # features agregadas -> Segura/Risco
+cvt seq velocity     # série bruta        -> velocidade crítica (e a faixa de ISL junto)
+cvt tab isl          # features agregadas -> faixa de ISL
 ```
+
+No `cvt seq velocity`, o modelo prevê a velocidade **e** a faixa de ISL na mesma passada, por uma segunda cabeça de classificação (multitarefa). Assim a faixa é aprendida direto, em vez de sair de um corte por limiar sobre a velocidade prevista, que é o que degradava a classe perto das fronteiras.
 
 Outros comandos úteis são:
 
 ```bash
-cvt --velocity --rebuild     # ignora o cache e reprocessa os dados
-cvt --velocity --no-plot     # pula geração de gráficos
+cvt seq velocity --rebuild     # ignora o cache e reprocessa os dados
+cvt seq velocity --no-plot     # pula geração de gráficos
 ```
 > [!TIP]
 > Use `--rebuild` ao mudar parâmetros de detecção de curvas (`config.yaml`) ou de extração de features (`features.yaml > extracao`).
@@ -78,16 +103,22 @@ Para cada segmento contíguo de `curva=True`, três critérios independentes ger
 
 `manobra_combinado_curva` é o OR dos três. Detalhes desses critérios estão em [RISK_MEASURES](docs/RISK_MEASURES.md).
 
+### Validação
+
+O corte treino/teste é feito **por rota**, nunca por curva: todas as curvas de uma gravação ficam do mesmo lado, senão o modelo veria condições quase idênticas nos dois e a métrica ficaria inflada. O SMOTE roda só dentro do fold de treino, jamais na validação ou no teste. Os detalhes estão em [TRAIN-TEST](docs/TRAIN-TEST.md).
+
 ### Modelos
 
-- **Tabular** (`--risk`): 
-  - Logistic Regression
+A família do modelo **não** é um dos dois eixos: ela é escolhida dentro de cada representação, o que permite comparar clássico com neural sem trocar a entrada.
+
+- **Tabular** (`cvt tab`), sobre as features agregadas por curva:
+  - Logistic Regression (classificação) / Ridge (regressão)
   - Decision Tree
   - Random Forest
   - XGBoost
   - SVM
   - MLP
-- **Temporal** (`--velocity`): operam sobre a sequência bruta da janela pré-curva
+- **Sequência** (`cvt seq`), sobre a série bruta da janela pré-curva. Os modelos rodados saem de `config.yaml > temporais.model`, e podem ser clássicos (que achatam a série em estatísticas) ou neurais:
   - Regressão Linear
   - Random Forest
   - XGBoost
@@ -95,6 +126,13 @@ Para cada segmento contíguo de `curva=True`, três critérios independentes ger
   - Long Short-Term Memory (LSTM)
   - Gated Recurrent Unit (GRU)
   - Rede Neural Convolucional (CNN)
+
+### Faixas de ISL
+
+O ISL mede o quanto a curva exige da aderência do pneu, $ISL = v^2/(R\,g\,\mu)$, e vira três faixas (`baixo` < 0,5, `medio`, `alto` $\ge$ 0,8). Dois cuidados no rótulo, porque o raio vem de um B-spline sobre o GPS e é ruidoso:
+
+- O raio ganha um **piso** (`curve_detection.raio_min_isl`, 20 m por padrão). Sem ele, um raio espúrio de poucos metros fazia $v^2/R$ explodir e produzia ISL fisicamente impossível.
+- A curva é resumida pelo **p95** do ISL dos seus pontos, não pelo máximo. O máximo se deixa sequestrar por um único ponto de ruído; o p95 pega o instante quase pior.
 
 ## Dados
 Os dados utilizados no projeto foram coletadas em diversos cenários, os datasets brutos estão no repositório HuggingFace: [`jwsouza13/routes_ML_inmetro`](https://huggingface.co/datasets/jwsouza13/routes_ML_inmetro). Os dados foram coletados pela equipe Lainf do Inmetro.

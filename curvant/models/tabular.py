@@ -208,26 +208,31 @@ def aplicar_modelos_ml(
     target: str = 'manobra',
     f1_average: str = 'weighted',
     outdir: str = 'results',
+    labels: list[str] | None = None,
 ) -> pd.DataFrame:
     """
-    Treina e avalia modelos clássicos de ML.
+    Treina e avalia modelos clássicos de ML. Serve alvos binários (risco) e multiclasse
+    (isl_class), controlados por f1_average ('binary'/'weighted' vs 'macro') e labels.
 
     Metodologia correta:
       1. Split estratificado nos dados BRUTOS (antes de SMOTE / scaler / PCA)
       2. StratifiedKFold sobre X_train bruto
       3. Dentro de cada fold: SMOTE -> Scaler (-> PCA) -> fit  (via ImbPipeline)
          — amostras sintéticas nunca cruzam para o fold de validação
-      4. Avaliação no teste com Acurácia, F1 weighted, Precisão, Recall
+      4. Avaliação no teste com Acurácia, F1, Precisão, Recall
 
     pca_n_components : None | int (nº de componentes) | float 0–1 (variância explicada)
+    labels           : nomes das classes para a matriz de confusão (default: Segura/Risco)
     """
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
     )
     cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
-    # k_neighbors do SMOTE: no mínimo 1, no máximo 5, limitado pelo tamanho da minoria no fold
-    n_minority_train = int(y_train.sum()) if y_train.mean() <= 0.5 else int((1 - y_train).sum())
+    # k_neighbors do SMOTE: limitado pela classe MENOS frequente (vale para binário e
+    # multiclasse; a contagem por soma só funcionaria com rótulos 0/1).
+    _, _counts = np.unique(y_train, return_counts=True)
+    n_minority_train = int(_counts.min())
     n_minority_per_fold = max(1, n_minority_train * (cv_folds - 1) // cv_folds)
     smote_k = min(5, n_minority_per_fold - 1)
 
@@ -277,8 +282,8 @@ def aplicar_modelos_ml(
             cm = confusion_matrix(y_test, y_pred)
             plt.figure(figsize=(6, 4))
             sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                        xticklabels=['Segura', 'Risco'],
-                        yticklabels=['Segura', 'Risco'])
+                        xticklabels=(labels or ['Segura', 'Risco']),
+                        yticklabels=(labels or ['Segura', 'Risco']))
             plt.title(nome)
             plt.ylabel('Real')
             plt.xlabel('Prevista')
@@ -577,3 +582,95 @@ def plotar_scatter_regressao(
     print(f"  Scatter salvo em {path}")
 
 
+
+
+# Regressão tabular
+
+def treinar_regressao(
+    df: pd.DataFrame,
+    target: str = 'v_critica',
+    plot: bool = True,
+    random_state: int = 42,
+    test_size: float = 0.3,
+    cv_folds: int = 5,
+    outdir: str = 'results',
+    unidade: str = 'km/h',
+) -> pd.DataFrame:
+    """
+    Modelos clássicos de regressão sobre as features agregadas por curva.
+
+    É a contraparte tabular do que temporais.treinar_regressao_ts faz sobre a série bruta:
+    mesmo alvo, mesmo split por rota, mas a entrada é o vetor de features da curva em vez
+    da janela de 50 passos. Serve para responder se a série bruta ganha das features.
+
+    Sem SMOTE (alvo contínuo) e com GroupKFold em vez de StratifiedGroupKFold, pelo mesmo
+    motivo. Reporta uma referência trivial (prever sempre a média do treino), que é o piso
+    abaixo do qual um modelo não tem serventia.
+    """
+    X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
+        df, target=target, test_size=test_size, random_state=random_state,
+    )
+    cv = GroupKFold(n_splits=cv_folds)
+
+    print(f"  Split - treino: {len(y_train)} (média={y_train.mean():.3f})  "
+          f"teste: {len(y_test)} (média={y_test.mean():.3f})")
+
+    # Baseline sem aprendizado: prever sempre a média do treino.
+    pred_media = np.full_like(y_test, y_train.mean(), dtype=float)
+    print(f"  [BASELINE média do treino]  R²: {r2_score(y_test, pred_media):7.4f}  "
+          f"MAE: {mean_absolute_error(y_test, pred_media):6.3f} {unidade}")
+
+    modelos = {
+        'Ridge':              Ridge(random_state=random_state),
+        'Floresta Aleatória': RandomForestRegressor(random_state=random_state, n_jobs=-1),
+        'XGBoost':            XGBRegressor(
+            n_estimators=300, learning_rate=0.1, max_depth=6,
+            random_state=random_state, verbosity=0,
+        ),
+        'Rede Neural (MLP)':  MLPRegressor(
+            hidden_layer_sizes=(128, 64), max_iter=2000, random_state=random_state,
+        ),
+    }
+
+    linhas = []
+    for nome, reg in modelos.items():
+        pipe = Pipeline([('scaler', StandardScaler()), ('reg', reg)])
+
+        cv_res = cross_validate(
+            pipe, X_train, y_train, cv=cv, groups=groups_train,
+            scoring={'r2': 'r2', 'mae': 'neg_mean_absolute_error'},
+        )
+        cv_r2  = cv_res['test_r2'].mean()
+        cv_mae = -cv_res['test_mae'].mean()
+
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+        r2  = r2_score(y_test, y_pred)
+        mae = mean_absolute_error(y_test, y_pred)
+
+        print(f'{nome:22s}  CV R²: {cv_r2:7.4f}  CV MAE: {cv_mae:6.3f}  |  '
+              f'Teste R²: {r2:7.4f}  MAE: {mae:6.3f} {unidade}')
+
+        if plot:
+            plotar_scatter_regressao(y_test, y_pred, target, nome, outdir=outdir)
+
+        linhas.append({
+            'Modelo':        nome,
+            'CV R²':         cv_r2,
+            f'CV MAE ({unidade})':  cv_mae,
+            'R² (teste)':    r2,
+            f'MAE ({unidade})':     mae,
+        })
+
+    df_res = pd.DataFrame(linhas)
+    os.makedirs(outdir, exist_ok=True)
+    df_res.to_latex(
+        os.path.join(outdir, 'resultados.tex'),
+        float_format='%.3f',
+        index=False,
+        caption=f'Regressão tabular para {target.replace("_", chr(92) + "_")} — '
+                f'validação cruzada por rota (GroupKFold) e conjunto de teste.',
+        label=f'tab:reg_{target}',
+        position='h',
+    )
+    return df_res

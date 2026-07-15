@@ -5,12 +5,10 @@ import numpy as np
 import pandas as pd
 
 from curvant.steps import (
-    detect_curves, label_driving, extract_features, train_risk, train_velocity,
+    detect_curves, label_driving, extract_features, train_tab, train_seq,
 )
 from curvant.utils.config import carregar_config, carregar_features_config
 from curvant.driving.features import configurar_features_ativas, resolver_features_flag
-
-_FLAGS_ACAO = ('risk', 'velocity')
 
 _CACHE_ANALYSIS = 'data/.cache_df_analysis.parquet'
 _CACHE_FEATURES = 'data/.cache_features_df.parquet'
@@ -91,19 +89,52 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
     return df_analysis, features_df
 
 
+_DESCRICAO_ALVO = {
+    'risk':     'Segura/Risco (manobra_combinado_curva)',
+    'isl':      'faixa de ISL (baixo/medio/alto)',
+    'velocity': 'velocidade crítica (v_critica)',
+}
+
+
+def _add_alvo(sub, nome: str, ajuda: str):
+    """Subcomando de representação, com o alvo como argumento posicional."""
+    p = sub.add_parser(nome, help=ajuda, description=ajuda)
+    p.add_argument(
+        'target', choices=list(_DESCRICAO_ALVO),
+        help='; '.join(f'{k} = {v}' for k, v in _DESCRICAO_ALVO.items()),
+    )
+    p.add_argument('--no-plot', action='store_true', help='Não gerar gráficos (mais rápido)')
+    p.add_argument('--rebuild', action='store_true', help='Ignorar o cache e reprocessar as etapas 1-5')
+    return p
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description='CurvantML - escolha o que prever com uma flag de target.',
+        prog='cvt',
+        description=(
+            'CurvantML - dois eixos: a REPRESENTAÇÃO da entrada (tab | seq) e o ALVO '
+            '(risk | isl | velocity). O mesmo alvo roda nas duas representações, que é como '
+            'se compara se a série bruta ganha das features agregadas.'
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__,
+        epilog=(
+            'Exemplos:\n'
+            '  cvt tab risk           features agregadas -> Segura/Risco\n'
+            '  cvt seq velocity       série bruta        -> velocidade (+ISL, multitarefa)\n'
+            '  cvt tab isl            features agregadas -> faixa de ISL\n'
+            '  cvt seq isl            série bruta        -> faixa de ISL\n'
+            '  cvt preprocess         limpa os dados brutos\n'
+        ),
     )
-    parser.add_argument('--risk',       action='store_true', help='Classify curve as Safe/Risk')
-    parser.add_argument('--velocity',   action='store_true', help='Predict critical speed and derive ISL')
-    parser.add_argument('--no-plot',    action='store_true', help='Skip plots (faster)')
-    parser.add_argument('--rebuild',    action='store_true', help='Ignore cache and reprocess steps 1-5')
-    parser.add_argument('--preprocess', action='store_true', help='Clean raw data (auto-detects main file)')
-    parser.add_argument('--input',  type=str, default=None, help='Raw file to clean; used with --preprocess')
-    parser.add_argument('--output', type=str, default=None, help='Output clean file; used with --preprocess')
+    sub = parser.add_subparsers(dest='repr')
+
+    _add_alvo(sub, 'tab', 'Representação tabular: features agregadas por curva')
+    _add_alvo(sub, 'seq', 'Representação de sequência: janela bruta de série temporal')
+
+    pre = sub.add_parser('preprocess', help='Limpa os dados brutos (detecta o arquivo principal)')
+    pre.add_argument('--input',  type=str, default=None, help='Arquivo bruto a limpar')
+    pre.add_argument('--output', type=str, default=None, help='Arquivo limpo de saída')
+
     return parser
 
 
@@ -111,33 +142,31 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    acoes = any(getattr(args, f) for f in _FLAGS_ACAO)
-    if not acoes and not args.preprocess:
+    if args.repr is None:
         parser.print_help()
         return
 
-    if args.preprocess:
+    if args.repr == 'preprocess':
         from curvant.utils.preprocessing import executar_preprocessamento
         in_path = args.input or _input_bruto()
-        print(f"[preprocess] Cleaning raw data: {in_path}")
+        print(f"[preprocess] Limpando os dados brutos: {in_path}")
         executar_preprocessamento(in_path, args.output)
-        if not acoes:
-            return
+        return
 
-    plot = not args.no_plot
-    cfg = carregar_config()
+    plot     = not args.no_plot
+    cfg      = carregar_config()
     feat_cfg = carregar_features_config()
-    df_analysis, features_df = _carregar_features(cfg, feat_cfg, args.rebuild, mostrar_risco=args.risk)
+    df_analysis, features_df = _carregar_features(
+        cfg, feat_cfg, args.rebuild, mostrar_risco=(args.target == 'risk'),
+    )
 
-    if args.risk:
-        print("\n[risk] Safe/Risk classification...")
-        configurar_features_ativas(resolver_features_flag(feat_cfg, 'risk'))
-        train_risk.classicos(features_df, cfg, plot)
-        print("\n[risk] All models per individual criterion...")
-        train_risk.criterios_separados(features_df, cfg, plot)
-
-    if args.velocity:
-        print("\n[velocity] Critical speed prediction (v_critica)...")
-        train_velocity.run(df_analysis, features_df, cfg, feat_cfg, plot)
+    print(f"\n[{args.repr} {args.target}] {_DESCRICAO_ALVO[args.target]}...")
+    if args.repr == 'tab':
+        # Só o tabular usa a whitelist chapada de features; a sequência define seus canais
+        # por sensors/scalares_extras, lidos direto do features.yaml pelo treinador.
+        configurar_features_ativas(resolver_features_flag(feat_cfg, 'tab'))
+        train_tab.run(args.target, features_df, cfg, plot)
+    else:
+        train_seq.run(args.target, df_analysis, features_df, cfg, feat_cfg, plot)
 
     print("\nDone.")

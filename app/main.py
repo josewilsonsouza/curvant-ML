@@ -26,7 +26,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 st.set_page_config(
     page_title="CurvantML",
     layout="wide",
-    page_icon=_Image.open(os.path.join(_ROOT, "images", "curvantML.png")),
+    page_icon=_Image.open(os.path.join(_ROOT, "figures", "curvantML.png")),
 )
 
 _CACHE_DIR = "data/.cache_app"
@@ -152,7 +152,7 @@ features_df["_local"] = features_df["id_route"].map(loc_map)
 
 # Sidebar - filtros
 
-st.sidebar.image(os.path.join(_ROOT, "images", "curvantML.png"), width=180)
+st.sidebar.image(os.path.join(_ROOT, "figures", "curvantML.png"), width=180)
 st.sidebar.markdown("Visualizador de manobras em curvas")
 if st.sidebar.button("Reprocessar dados", use_container_width=True):
     carregar_pipeline.clear()

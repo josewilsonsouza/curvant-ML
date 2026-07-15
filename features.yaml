@@ -4,7 +4,7 @@
 # Modo dinâmico (precurva_distancia: null): d = v² / (2 × precurva_desacel_confort), com clip
 # entre precurva_distancia_min e precurva_distancia_max.
 extracao:
-  precurva_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × precurva_desacel_confort)
+  precurva_distancia: 100         # m fixos antes da curva; null -> d = v² / (2 × precurva_desacel_confort)
   precurva_desacel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
   precurva_distancia_min: 20       # m - tamanho mínimo da janela dinâmica
   precurva_distancia_max: 400      # m - tamanho máximo da janela dinâmica
@@ -14,12 +14,19 @@ extracao:
     - accel_x
     - accel_y
     - engine_rpm
-    - accelerator_pedal_pos_d    # posição do pedal de acelerador (ausente no eletronuclear)
+  # accelerator_pedal_pos_d fica de fora, aqui e nas duas flags abaixo. Ele existe em 100% de
+  # rjdf/rjmgba/janeiro/serra e em 0% do eletronuclear (12% dos dados). Preencher o que falta
+  # com zero seria mentir: "pedal em 0%" não é pedal solto, é dado ausente, e marcaria todas as
+  # curvas do eletronuclear com uma assinatura que o modelo aprende a reconhecer (o dataset, não
+  # a condução). Vale também para throttle_off_distance, que deriva dele e cujo NaN vira 0.0,
+  # valor que significa "entrou acelerando". Mesma política do accel_z e do throttle.
 
 flags:
 
-  # Classificação Segura/Risco (tabular). Lista chapada de features.
-  risk:
+  # Representação TABULAR (`cvt tab <alvo>`): lista chapada de features agregadas por curva.
+  # Compartilhada pelos três alvos tabulares (risk, isl, velocity), porque as features
+  # pré-curva são as mesmas; o que muda entre eles é só o alvo.
+  tab:
     features:
       # estatísticas da velocidade na janela pré-curva
       - vehicle_speed_mean
@@ -49,16 +56,6 @@ flags:
       - accel_y_slope
       - accel_y_mean_tarde
       - accel_y_slope_tarde
-      # estatísticas da posição do pedal de acelerador
-      - accelerator_pedal_pos_d_mean
-      - accelerator_pedal_pos_d_std
-      - accelerator_pedal_pos_d_median
-      - accelerator_pedal_pos_d_max
-      - accelerator_pedal_pos_d_min
-      - accelerator_pedal_pos_d_slope
-      - accelerator_pedal_pos_d_cv
-      - accelerator_pedal_pos_d_mean_tarde
-      - accelerator_pedal_pos_d_slope_tarde
       # jerk (derivada da aceleração) e contagens de eventos na janela
       - jerk_x_max
       - jerk_x_std
@@ -75,7 +72,6 @@ flags:
       - precurva_raio_min
       - precurva_raio_mean
       - precurva_raio_last
-      - throttle_off_distance
       # geometria real da curva à frente
       - f4_raio_min
       - f4_raio_mean
@@ -92,20 +88,20 @@ flags:
       - mc_p_medio
       - mc_p_alto
 
-  # Importância de features: é a análise do modelo de risco, então usa a mesma lista.
+  # Importância de features: é a análise do modelo tabular, então usa a mesma lista.
   importance:
-    herda: risk
+    herda: tab
 
-  # Previsão da velocidade crítica (série temporal). Duas entradas distintas:
+  # Representação de SEQUÊNCIA (`cvt seq <alvo>`). Duas entradas distintas, por isso não
+  # achatam numa lista só:
   #   sensors         - canais de série temporal (n_timesteps por curva)
   #   scalares_extras - escalares fixos por curva, adicionados como canais constantes
-  velocity:
+  seq:
     sensors:
       - vehicle_speed
       - accel_x
       - accel_y
       - engine_rpm
-      - accelerator_pedal_pos_d
     scalares_extras:
       - precurva_raio_min
       - precurva_raio_mean

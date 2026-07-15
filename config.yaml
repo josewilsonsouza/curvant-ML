@@ -9,9 +9,9 @@ physics:
 
 # ===================== Pipeline de dados =====================
 
-# Limpeza dos dados brutos.  Flag: --preprocess
+# Limpeza dos dados brutos.  Subcomando: cvt preprocess
 preprocessing:
-  accel_limite: 5.0              # m/s² - clip de spikes do acelerômetro
+  accel_limite: 5.0              # m/s^2 - clip de spikes do acelerômetro
   vel_max: 200.0                 # km/h - velocidade máxima plausível
   vel_min_parado: 1.0            # km/h - abaixo disso o carro é considerado parado
   max_parados_consecutivos: 3    # pontos parados consecutivos mantidos
@@ -25,7 +25,13 @@ curve_detection:
                      # Mantido em 0: a suavizadora foi testada e reprovada por reescrever
                      # ~20% dos rótulos de curva.
   limite_raio: 150   # m - raio máximo para marcar curva=True
-  raio_min: 5.0      # m - clip do raio antes do ISL; evita ISL -> inf por ruído de GPS
+  raio_min: 5.0      # m - clip do raio para ctp_accel (usado no risco/zigue-zague); mantido
+                     # baixo para não mexer no alvo de risco.
+  raio_min_isl: 20.0 # m - piso do raio SÓ para o rótulo de ISL (isl_class), isolado do ctp_accel
+                     # acima. Um raio de B-spline abaixo disto é ruído de GPS (nenhuma estrada
+                     # tomada em velocidade tem raio de poucos metros) e v²/R explodiria: com 5 m
+                     # o isl chegava a 22 (impossível). 20 m afeta ~28% dos pontos (quase todos
+                     # ruído) e mantém o ISL plausível, sem tocar nos critérios de risco.
 
   # Classificação DNIT (Manual de Projeto Geométrico de Rodovias Rurais, 2010); D = 1145.92/R
   dnit:
@@ -53,13 +59,13 @@ montecarlo:
 
 # ===================== Modelos =====================
 
-# Parâmetros compartilhados pelos modelos tabulares.
-# Flag: --risk  (também usado pela análise em notebooks/analise_risco.ipynb)
+# Parâmetros compartilhados pelos modelos tabulares (cvt tab risk|isl|velocity).
+# Também usado pela análise em notebooks/analise_risco.ipynb.
 ml:
   random_state: 42
   test_size: 0.3
   cv_folds: 5
-  pca_n_components: null       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
+  pca_n_components: 20       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
 
 # Ajuste de hiperparâmetros (XGBoost + RandomForest + LogReg).
 # Usado pela análise complementar em notebooks/analise_risco.ipynb (etapa_ml_otimizado).
@@ -69,13 +75,21 @@ optuna:
   n_trials_lr: 20
   timeout: 300        # s máximos por otimização
 
-# Previsão da velocidade crítica sobre a série temporal pré-curva.  Flag: --velocity
+# Modelos sobre a série temporal bruta pré-curva (cvt seq risk|isl|velocity).
 
 temporais:
   model: [lstm]                #opções: gru | lstm | cnn1d | mlp | linear | rf | xgboost
   task: auto                   # auto (detecta pelo target) | regression | classification
 
-  target: v_critica            # v_critica | isl_max | isl_mean | isl_class (classificação)
+  # O ALVO não fica aqui: vem do subcomando (`cvt seq risk|isl|velocity`). Assim não dá para
+  # esquecer de trocar o YAML e rodar o alvo errado sem perceber.
+
+  # Multitarefa (só com o alvo `velocity`): além da velocidade, uma cabeça de classe prevê
+  # isl_class direto, em vez de derivar a faixa cortando a velocidade por limiar. A velocidade
+  # segue como alvo principal (a parada antecipada olha o MSE dela). peso_classe (λ) pesa a
+  # perda da classe na soma L = MSE(v) + λ·CE(classe); baixo mantém a velocidade dominante.
+  multitarefa: true            # false = só velocidade (comportamento antigo)
+  peso_classe: 0.3             # λ da cabeça de classe
 
   target_cap_percentil: 99     # remove extremos acima deste percentil do target (null = sem filtro)
   n_timesteps: 50              # comprimento fixo após reamostragem da janela
@@ -84,7 +98,7 @@ temporais:
   lr: 0.005
   dropout: 0.3
   early_stopping_patience: 100 # épocas sem melhora na val_loss -> parar
-  val_size: 0.15               # fração do treino usada para validação
+  val_size: 0.30               # fração do treino usada para validação
   weight_decay: 0.01           # L2 no Adam
   hidden_size: 64              # GRU / LSTM
   n_layers: 1                  # GRU / LSTM

@@ -8,7 +8,7 @@ Funções:
 
 import os
 
-_DIR_RISCO = 'results/risco'
+_DIR_RISCO = 'results/tab/risk'
 
 def _tabela_criterios_risco(features_df, outdir: str) -> None:
     """Tabela da distribuição dos 3 critérios de risco por curva (alvo manobra)."""

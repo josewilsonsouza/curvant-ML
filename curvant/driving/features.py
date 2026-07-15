@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from curvant.constants import G as _G, MU as _MU_PADRAO, ISL_ALTO
+from curvant.constants import G as _G, MU as _MU_PADRAO, ISL_ALTO, RAIO_MIN_ISL
 from curvant.driving.isl import classificar_isl
 from curvant.driving.risk_measures import calcular_bearing as _calcular_bearing_gps
 
@@ -280,20 +280,31 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
     - ISL cinemático: v²/(R·g·μ) = ctp_accel/(g·μ) - depende do raio GPS (B-spline).
     - ISL via sensor: |accel_y|/(g·μ) - não depende do raio, mais robusto a GPS ruidoso.
     - v_critica: velocidade real no ponto de pico do ISL (prever isto equivale a prever ISL).
+
+    A classe (isl_class) sai do p95 do ISL na curva, não do máximo. O máximo pega o pior
+    ponto isolado, que num spline interpolador de GPS costuma ser um raio espúrio minúsculo
+    (v²/R explode); o p95 pega "o instante quase pior" sem se deixar sequestrar por um ponto
+    de ruído. O ISL aqui usa um piso de raio próprio (RAIO_MIN_ISL), isolado do ctp_accel do
+    risco: raios de B-spline abaixo dele são ruído e fariam v²/R explodir (com 5 m o isl_max
+    chegava a 22, impossível). Piso + p95 juntos entregam um rótulo em faixa física plausível.
     """
     out: dict = {}
 
-    if 'ctp_accel' in pts_curva.columns:
-        isl_vals = pts_curva['ctp_accel'].abs() / (_G * _MU_PADRAO)
-        isl_max  = float(isl_vals.max())
+    if {'raio_curvatura', 'vehicle_speed'} <= set(pts_curva.columns):
+        v_ms     = pts_curva['vehicle_speed'].values / 3.6
+        raio     = np.clip(pts_curva['raio_curvatura'].abs().values, RAIO_MIN_ISL, None)
+        isl_vals = (v_ms ** 2) / (raio * _G * _MU_PADRAO)
+        isl_p95  = float(np.percentile(isl_vals, 95))
         out['isl_mean']  = float(isl_vals.mean())
-        out['isl_max']   = isl_max
-        out['isl_class'] = classificar_isl(isl_max)
-        out['isl_alto']  = 1 if isl_max >= ISL_ALTO else 0
-        idx_max          = isl_vals.idxmax()
-        out['v_critica'] = float(pts_curva.loc[idx_max, 'vehicle_speed'])  # km/h
+        out['isl_max']   = float(isl_vals.max())
+        out['isl_p95']   = isl_p95
+        out['isl_class'] = classificar_isl(isl_p95)
+        out['isl_alto']  = 1 if isl_p95 >= ISL_ALTO else 0
+        idx_max          = int(np.argmax(isl_vals))
+        out['v_critica'] = float(pts_curva['vehicle_speed'].values[idx_max])  # km/h
     else:
-        out['isl_mean'] = out['isl_max'] = out['isl_class'] = out['isl_alto'] = np.nan
+        out['isl_mean'] = out['isl_max'] = out['isl_p95'] = np.nan
+        out['isl_class'] = out['isl_alto'] = np.nan
         out['v_critica'] = np.nan
 
     if 'accel_y' in pts_curva.columns:

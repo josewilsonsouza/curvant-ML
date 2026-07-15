@@ -4,12 +4,22 @@ A ideia é prever, antes do carro entrar numa curva, o quão arriscada ela vai s
 
 ## CLI
 
-Cada flag do `cvt` treina um alvo diferente (sem flag, mostra a ajuda):
+O `cvt` tem dois eixos: a **representação** da entrada (`tab`, as features agregadas por curva;
+`seq`, a série temporal bruta) e o **alvo**. O mesmo alvo roda nas duas representações, que é
+como se compara se a série bruta traz algo além das features. Sem subcomando, mostra a ajuda.
 
-| Comando | O que prevê | Tipo |
-|---|---|---|
-| `--risk` | curva é **Segura ou de Risco** (`manobra_combinado_curva`) | sim/não |
-| `--velocity` | a **velocidade crítica** da curva (`v_critica`) | número |
+| Alvo | O que prevê | Tipo | Coluna |
+|---|---|---|---|
+| `risk` | curva é **Segura ou de Risco** | sim/não | `manobra_combinado_curva` |
+| `isl` | a **faixa de ISL** da curva | baixo/medio/alto | `isl_class` |
+| `velocity` | a **velocidade crítica** da curva | número (km/h) | `v_critica` |
+
+Então `cvt tab risk`, `cvt seq isl`, `cvt seq velocity`, e assim por diante. Cada célula escreve
+em `results/<repr>/<alvo>/`.
+
+Em `cvt seq velocity` o modelo prevê a velocidade **e** a faixa de ISL na mesma passada, por uma
+segunda cabeça de classificação. A faixa passa a ser aprendida direto, em vez de sair de um corte
+por limiar sobre a velocidade prevista.
 
 Análises complementares do risco (importância de features, Optuna) ficam em `notebooks/analise_risco.ipynb`.
 
@@ -17,7 +27,7 @@ Análises complementares do risco (importância de features, Optuna) ficam em `n
 
 Todos são medidos **dentro da curva**, então nunca são usados como features.
 
-### 2.1 Alvos realmente treinados por algum comando
+### 2.1 Alvos treinados pela CLI
 
 | Coluna | Descrição |
 |---|---|
@@ -25,19 +35,38 @@ Todos são medidos **dentro da curva**, então nunca são usados como features.
 | `manobra_accel_curva` | Critério do limite de aderência do pneu (círculo de Kamm): a aceleração total passou de uma fração do que o pneu aguenta. |
 | `manobra_lateral_curva` | Aceleração lateral alta numa curva fechada o bastante. |
 | `manobra_ziguezague_curva` | Zigue-zague |
-| `isl_class` | A classe de risco ISL: **baixo, médio ou alto**. |
-| `isl_max` | O **maior ISL** atingido na curva. $ISL = v^2 / (R·g·\mu)$: quanto a curva chegou perto do limite de derrapagem. |
-| `v_critica` | A velocidade (km/h) no ponto de maior risco da curva. Este é o alvo do `--velocity`. |
+| `isl_class` | A faixa de ISL: **baixo, medio ou alto**. |
+| `v_critica` | A velocidade (km/h) no ponto de maior risco da curva. |
 
-### 2.2 Targets Opcionais
+Os três critérios individuais de manobra não têm subcomando próprio: eles são treinados de
+brinde por `cvt tab risk`, para mostrar qual critério limita o F1 do alvo combinado.
 
-Estão calculados e prontos, mas nenhum comando os usa por enquanto. Para treinar um deles,
-basta apontá-lo como alvo (ex.: `temporais.target` no `config.yaml`).
+### Como o `isl_class` é formado
+
+O ISL mede o quanto a curva exige da aderência disponível. Em cada ponto da curva:
+
+$$\text{isl}_i = \frac{(v_i/3.6)^2}{\max(|R_i|,\;R_{\min})\cdot g\cdot\mu}$$
+
+O raio $R_i$ vem do B-spline sobre o GPS, e é ruidoso. Daí os dois cuidados:
+
+- **Piso no raio** (`curve_detection.raio_min_isl`, 20 m). Sem ele, um raio espúrio de poucos
+  metros faz $v^2/R$ explodir: o rótulo chegava a ISL de 22, fisicamente impossível.
+- **A curva é resumida pelo p95** dos seus pontos, não pelo máximo. O máximo se deixa sequestrar
+  por um único ponto de ruído; o p95 pega o instante quase pior.
+
+Depois, dois limiares (`physics.isl_baixo` = 0,5 e `physics.isl_alto` = 0,8) dão a faixa. Boa
+parte das curvas cai perto de um desses cortes, então eles são o que mais influencia a
+dificuldade da classificação.
+
+### 2.2 Targets calculados mas sem subcomando
+
+Estão prontos no `features_df`, mas nenhum subcomando os treina. Servem de material para análise.
 
 | Coluna | O que é |
 |---|---|
 | `manobra` | Mesmo que `manobra_combinado_curva` (nome antigo, mantido por compatibilidade). |
-| `isl_mean` | ISL **médio** da curva (em vez do máximo). |
+| `isl_p95` | O ISL robusto da curva, que dá origem ao `isl_class`. |
+| `isl_max` / `isl_mean` | ISL máximo e médio da curva. O máximo é sensível a ponto de ruído, por isso não é ele que forma a faixa. |
 | `isl_alto` | Sinal de sim/não: o ISL passou de 0,8? |
 | `isl_sensor_max` / `_mean` / `_class` | Uma versão do ISL calculada pelo **acelerômetro** (\|accel_y\|/g·μ) em vez do raio do GPS. Não depende do raio, então não sofre com ruído de GPS. |
 
@@ -62,7 +91,7 @@ As estatísticas básicas dos sensores na janela antes da curva. Para `vehicle_s
 - `precurva_bearing_range`: amplitude total do bearing na janela (max − min)
 - `precurva_n_mudancas_dir`: contagem de alternâncias de sinal de Δbearing (|Δθ| > 15°) na janela
 
-> A variável `distance_car_curve` é o tamanho da janela, em `m` de aproximação. A distância da ponta da janela até a entrada da curva é fixa e vale `lead_gap`  (**30 m** default). Só no `--velocity` existe uma variável que mede a distância que falta para a curva a cada instante: `distancia_restante` (ver Seção 4).
+> A variável `distance_car_curve` é o tamanho da janela, em `m` de aproximação. A distância da ponta da janela até a entrada da curva é fixa e vale `lead_gap`  (**30 m** default). Só na representação de sequência existe uma variável que mede a distância que falta para a curva a cada instante: `distancia_restante` (ver Seção 4).
 
 ### Grupo 3 - Geometria da janela pré-curva (3 colunas)
 `precurva_raio_min`, `precurva_raio_mean`, `precurva_raio_last`: o raio da pista durante a aproximação, pois mede o quanto a estrada já estava curvando antes da curva-alvo.
@@ -79,15 +108,21 @@ imediatamente anterior).
 ### Grupo 6 - Monte Carlo (3 colunas)
 `mc_p_baixo`, `mc_p_medio`, `mc_p_alto`: uma simulação que, a partir da velocidade na aproximação e do raio da curva, estima a probabilidade de cada classe de ISL. Na prática é um "chute físico" embutido como feature, e que também foi usado para comparar com o modelo.
 
-## 4. O comando `--velocity` usa um conjunto de features diferente
+## 4. A representação de sequência usa uma entrada diferente
 
-O `--velocity` **não** usa as 49 features acima. Ele trabalha com a **sequência no tempo** dos sensores. Ou seja, a série inteira da aproximação, não só as estatísticas resumidas. Ele usa:
+Os grupos acima são as features da representação **tabular** (`cvt tab`), e é a lista
+`flags.tab.features` do [features.yaml](../features.yaml) que decide quais entram. Os três alvos
+tabulares compartilham essa mesma lista: as features pré-curva são as mesmas, o que muda entre
+eles é só o que se prevê.
+
+A representação de **sequência** (`cvt seq`) **não** usa essas features. Ela trabalha com a série
+no tempo dos sensores, ou seja, a aproximação inteira, não só as estatísticas resumidas:
 
 - **Sensores ao longo do tempo** (50 instantes): `vehicle_speed`, `accel_x`, `accel_y`,  `engine_rpm` + o canal **`distancia_restante`**, que é a distância que falta para a entrada da curva em cada instante (decresce até zero na entrada, normalizada para [0, 1]).
-- **Alguns números fixos por curva**: `jerk_y_max`, as contagens de perigo, a geometria da curva à frente, as probabilidades de Monte Carlo, e o contexto (`mean_isl_antes`, `prev_isl_max`, `n_curvas_antes`).
-- **A resposta da curva anterior** (`prev_v_critica`): usa o valor da velocidade critica da curva passada como pista.
+- **Alguns números fixos por curva**, repetidos ao longo do tempo como canais constantes: `jerk_y_max`, as contagens de perigo, a geometria da curva à frente, as probabilidades de Monte Carlo, e o contexto (`mean_isl_antes`, `prev_isl_max`, `n_curvas_antes`).
+- **A resposta da curva anterior** (`prev_<alvo>`): usa o valor do alvo na curva passada como pista.
 
-Para mudar as features usadas pela flag `--velocity`, edite `flags.velocity.sensors` e `.scalares_extras` no [features.yaml](../features.yaml).
+Para mudar os canais da sequência, edite `flags.seq.sensors` e `flags.seq.scalares_extras` no [features.yaml](../features.yaml).
 
 > [!TIP]
 > - **A previsão é antecipada.** A janela pré-curva termina 30 m **antes** da entrada

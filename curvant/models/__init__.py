@@ -2,6 +2,7 @@ from curvant.driving.features import colunas_features
 from .tabular import (
     aplicar_modelos_ml,
     aplicar_modelos_ml_otimizados,
+    treinar_regressao,
     _split_por_rota,
     _split_rota_generico,
     _base_route,
