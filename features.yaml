@@ -4,7 +4,7 @@
 # Modo dinâmico (precurva_distancia: null): d = v² / (2 × precurva_desacel_confort), com clip
 # entre precurva_distancia_min e precurva_distancia_max.
 extracao:
-  precurva_distancia: 100         # m fixos antes da curva; null -> d = v² / (2 × precurva_desacel_confort)
+  precurva_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × precurva_desacel_confort)
   precurva_desacel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
   precurva_distancia_min: 20       # m - tamanho mínimo da janela dinâmica
   precurva_distancia_max: 400      # m - tamanho máximo da janela dinâmica

@@ -65,7 +65,7 @@ ml:
   random_state: 42
   test_size: 0.3
   cv_folds: 5
-  pca_n_components: 20       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
+  pca_n_components: null       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
 
 # Ajuste de hiperparâmetros (XGBoost + RandomForest + LogReg).
 # Usado pela análise complementar em notebooks/analise_risco.ipynb (etapa_ml_otimizado).

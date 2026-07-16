@@ -49,6 +49,8 @@ def classicos(features_df, cfg: dict, plot: bool):
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
         pca_n_components=pca,
+        f1_average='binary',   # mesma métrica dos critérios: F1 da classe positiva (Risco),
+                               # para o combinado ser comparável com Kamm/lateral/zigue-zague
         outdir=_DIR_RISCO,
     )
 

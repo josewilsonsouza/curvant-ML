@@ -568,21 +568,28 @@ def _treinar_um_neural(
 
     for epoch in range(epochs):
         model.train()
-        ep_loss = 0.0
+        # No multitarefa, MSE e CE são acompanhados separados: o que se compara com a
+        # validação (que só olha MSE) é o MSE de treino, não a soma ponderada.
+        ep_mse, ep_ce = 0.0, 0.0
         for batch in loader:
             optimizer.zero_grad()
             if mt:
                 xb, yb, yb_cls = batch
                 reg_out, cls_out = model(xb)
-                loss = loss_fn(reg_out, yb) + peso_classe * ce_aux_fn(cls_out, yb_cls)
+                mse = loss_fn(reg_out, yb)
+                ce  = ce_aux_fn(cls_out, yb_cls)
+                loss = mse + peso_classe * ce
+                ep_ce += ce.item()
             else:
                 xb, yb = batch
-                loss = loss_fn(model(xb), yb)
+                mse  = loss_fn(model(xb), yb)
+                loss = mse
             loss.backward()
             optimizer.step()
-            ep_loss += loss.item()
-        ep_loss /= len(loader)
-        hist_train.append(ep_loss)
+            ep_mse += mse.item()
+        ep_mse /= len(loader)
+        ep_ce  /= len(loader)
+        hist_train.append(ep_mse)
 
         model.eval()
         with torch.no_grad():
@@ -608,8 +615,9 @@ def _treinar_um_neural(
                 break
 
         if (epoch + 1) % 20 == 0:
-            print(f"    Época {epoch + 1}/{epochs} - train: {ep_loss:.4f}  val: {val_loss:.4f}  "
-                  f"LR: {optimizer.param_groups[0]['lr']:.2e}")
+            extra = f"  CE(classe): {ep_ce:.4f}" if mt else ""
+            print(f"    Época {epoch + 1}/{epochs} - train MSE: {ep_mse:.4f}{extra}  "
+                  f"val MSE: {val_loss:.4f}  LR: {optimizer.param_groups[0]['lr']:.2e}")
 
     if best_state is not None:
         model.load_state_dict(best_state)
