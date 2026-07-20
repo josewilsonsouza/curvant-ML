@@ -10,16 +10,58 @@ from curvant.steps import (
 from curvant.utils.config import carregar_config, carregar_features_config
 from curvant.driving.features import configurar_features_ativas, resolver_features_flag
 
-_CACHE_ANALYSIS = 'data/.cache_df_analysis.parquet'
-_CACHE_FEATURES = 'data/.cache_features_df.parquet'
-
 _RAW_CANDIDATOS = [
+    'data/eletro_rjdf_serra_rjmgba_janeiro_agda.parquet',
     'data/eletro_rjdf_serra_rjmgba_janeiro.parquet',
     'data/eletro_rjdf_serra.parquet',
 ]
 
 
-def _input_bruto() -> str:
+def _nome_base(valor: str) -> str:
+    """Caminho ou nome -> nome base do dataset (sem pasta, sem .parquet, sem _clean)."""
+    nome = os.path.basename(valor)
+    if nome.endswith('.parquet'):
+        nome = nome[: -len('.parquet')]
+    if nome.endswith('_clean'):
+        nome = nome[: -len('_clean')]
+    return nome
+
+
+def _resolver_dataset(cfg: dict, arg_data: str | None) -> tuple[str, bool, str]:
+    """Qual arquivo usar: --data > config data.dataset > auto-detecção.
+
+    Devolve (caminho, eh_limpo, nome_base), preferindo o _clean quando existir.
+    """
+    escolhido = arg_data or (cfg.get('data') or {}).get('dataset')
+    if escolhido:
+        nome = _nome_base(str(escolhido))
+        for caminho, limpo in ((f'data/{nome}_clean.parquet', True), (f'data/{nome}.parquet', False)):
+            if os.path.exists(caminho):
+                return caminho, limpo, nome
+        disponiveis = sorted({
+            _nome_base(f) for f in os.listdir('data')
+            if f.endswith('.parquet') and not f.startswith('.')
+        })
+        raise FileNotFoundError(
+            f"Dataset '{nome}' não encontrado em data/. Disponíveis: {', '.join(disponiveis)}"
+        )
+    for bruto in _RAW_CANDIDATOS:
+        caminho = f'data/{_nome_base(bruto)}_clean.parquet'
+        if os.path.exists(caminho):
+            return caminho, True, _nome_base(bruto)
+    for bruto in _RAW_CANDIDATOS:
+        if os.path.exists(bruto):
+            return bruto, False, _nome_base(bruto)
+    raise FileNotFoundError("Nenhum arquivo de dados encontrado em data/")
+
+
+def _input_bruto(cfg: dict) -> str:
+    escolhido = (cfg.get('data') or {}).get('dataset')
+    if escolhido:
+        caminho = f'data/{_nome_base(str(escolhido))}.parquet'
+        if not os.path.exists(caminho):
+            raise FileNotFoundError(f"Arquivo bruto do dataset não encontrado: {caminho}")
+        return caminho
     caminho = next((p for p in _RAW_CANDIDATOS if os.path.exists(p)), None)
     if caminho is None:
         raise FileNotFoundError(
@@ -35,28 +77,23 @@ def _cache_valido(cache_path: str, data_path: str) -> bool:
     return os.path.getmtime(cache_path) >= os.path.getmtime(data_path)
 
 
-def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: bool = False):
+def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: bool = False,
+                       arg_data: str | None = None):
     """Carrega features do cache ou reconstrói o pipeline (etapas 1-5)."""
-    candidates = [
-        ('data/eletro_rjdf_serra_rjmgba_janeiro_clean.parquet', True),
-        ('data/eletro_rjdf_serra_clean.parquet',                True),
-        ('data/eletro_rjdf_serra_rjmgba_janeiro.parquet',       False),
-        ('data/eletro_rjdf_serra.parquet',                      False),
-    ]
-    data_path, is_clean = next(((p, c) for p, c in candidates if os.path.exists(p)), (None, False))
-    if data_path is None:
-        raise FileNotFoundError("Nenhum arquivo de dados encontrado em data/")
+    data_path, is_clean, nome = _resolver_dataset(cfg, arg_data)
+    cache_analysis = f'data/.cache_df_analysis_{nome}.parquet'
+    cache_features = f'data/.cache_features_df_{nome}.parquet'
 
     usar_cache = (
         not rebuild
-        and _cache_valido(_CACHE_ANALYSIS, data_path)
-        and _cache_valido(_CACHE_FEATURES, data_path)
+        and _cache_valido(cache_analysis, data_path)
+        and _cache_valido(cache_features, data_path)
     )
 
     if usar_cache:
-        print("[cache] Carregando intermediários do cache (use --rebuild para reprocessar)...")
-        df_analysis = pd.read_parquet(_CACHE_ANALYSIS)
-        features_df = pd.read_parquet(_CACHE_FEATURES)
+        print(f"[cache] Carregando intermediários de '{nome}' do cache (use --rebuild para reprocessar)...")
+        df_analysis = pd.read_parquet(cache_analysis)
+        features_df = pd.read_parquet(cache_features)
         print(f"  df_analysis: {len(df_analysis):,} linhas | features_df: {len(features_df):,} curvas")
         return df_analysis, features_df
 
@@ -83,9 +120,9 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
     print("\n[5/5] Identificando trechos curvos e extraindo features...")
     features_df = extract_features.run(df_analysis, cfg, feat_cfg, mostrar_risco=mostrar_risco)
 
-    df_analysis.to_parquet(_CACHE_ANALYSIS, index=False)
-    features_df.to_parquet(_CACHE_FEATURES, index=False)
-    print(f"  [cache] Intermediários salvos em {_CACHE_ANALYSIS} e {_CACHE_FEATURES}")
+    df_analysis.to_parquet(cache_analysis, index=False)
+    features_df.to_parquet(cache_features, index=False)
+    print(f"  [cache] Intermediários salvos em {cache_analysis} e {cache_features}")
     return df_analysis, features_df
 
 
@@ -105,6 +142,8 @@ def _add_alvo(sub, nome: str, ajuda: str):
     )
     p.add_argument('--no-plot', action='store_true', help='Não gerar gráficos (mais rápido)')
     p.add_argument('--rebuild', action='store_true', help='Ignorar o cache e reprocessar as etapas 1-5')
+    p.add_argument('--data', type=str, default=None,
+                   help='Dataset a usar (nome ou caminho em data/); sobrescreve config data.dataset')
     return p
 
 
@@ -148,7 +187,7 @@ def main() -> None:
 
     if args.repr == 'preprocess':
         from curvant.utils.preprocessing import executar_preprocessamento
-        in_path = args.input or _input_bruto()
+        in_path = args.input or _input_bruto(carregar_config())
         print(f"[preprocess] Limpando os dados brutos: {in_path}")
         executar_preprocessamento(in_path, args.output)
         return
@@ -158,6 +197,7 @@ def main() -> None:
     feat_cfg = carregar_features_config()
     df_analysis, features_df = _carregar_features(
         cfg, feat_cfg, args.rebuild, mostrar_risco=(args.target == 'risk'),
+        arg_data=args.data,
     )
 
     print(f"\n[{args.repr} {args.target}] {_DESCRICAO_ALVO[args.target]}...")

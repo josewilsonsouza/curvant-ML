@@ -45,7 +45,7 @@ cvt <repr> <alvo>
 A **representação** decide o que o modelo enxerga de cada curva:
 
 - **`tab`**: as features já agregadas por curva (um vetor de números: médias, máximos, jerk, geometria).
-- **`seq`**: a série temporal bruta da janela pré-curva (50 instantes de sensores).
+- **`seq`**: a série temporal bruta da janela pré-curva, reamostrada para um comprimento fixo (`config.yaml > temporais.n_timesteps`).
 
 O **alvo** decide o que se prevê: `risk` (Segura ou Risco), `isl` (a faixa de ISL) ou `velocity` (a velocidade crítica).
 
@@ -69,16 +69,29 @@ No `cvt seq velocity`, o modelo prevê a velocidade **e** a faixa de ISL na mesm
 Outros comandos úteis são:
 
 ```bash
-cvt seq velocity --rebuild     # ignora o cache e reprocessa os dados
-cvt seq velocity --no-plot     # pula geração de gráficos
+cvt seq velocity --rebuild                # ignora o cache e reprocessa os dados
+cvt seq velocity --no-plot                # pula geração de gráficos
+cvt tab risk --data eletro_rjdf_serra     # roda sobre outro dataset
 ```
 > [!TIP]
 > Use `--rebuild` ao mudar parâmetros de detecção de curvas (`config.yaml`) ou de extração de features (`features.yaml > extracao`).
 
+### Escolha do dataset
+
+O dataset é escolhido nesta ordem: flag `--data` > campo `data.dataset` do `config.yaml` > auto-detecção do maior arquivo disponível em `data/`. O valor pode ser o nome do conjunto (`eletro_rjdf_serra`) ou um caminho, e a versão limpa (`_clean`) é preferida quando existir.
+
+```yaml
+# config.yaml
+data:
+  dataset: null   # null = auto-detecta; ou o nome, ex: eletro_rjdf_serra_rjmgba_janeiro_agda
+```
+
+Os resultados intermediários do pipeline são cacheados por dataset (`data/.cache_*_<nome>.parquet`), então alternar entre conjuntos não reprocessa nem mistura nada.
+
 A mudança de parâmetros das configurações podem ser feitas no **`config.yaml`** e, para o gerenciamento das features, o arquivo **`features.yaml`**. A lista completa de targets e features está em **[TARGETS_E_FEATURES](docs/TARGETS_E_FEATURES.md)**.
 ## Pipeline
 
-O projeto segue o seguite pipeline.
+O projeto segue o seguinte pipeline.
 
 ```mermaid
 graph LR
@@ -143,3 +156,6 @@ Os dados utilizados no projeto foram coletadas em diversos cenários, os dataset
 | RJ-DF | Nivus | Rio de Janeiro -> Brasília | `rjdf` |
 | SERRA | Jetta | trecho serrano | `serra` |
 | RJMGBA / JANEIRO | - | rotas adicionais | `rjmgba`, `janeiro` |
+| AGDA | - | rotas adicionais (maio e junho/2025) | `agda` |
+
+O conjunto mais completo é o `eletro_rjdf_serra_rjmgba_janeiro_agda`, que reúne todas as coletas acima e é o usado por padrão pela auto-detecção.

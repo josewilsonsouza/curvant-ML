@@ -21,7 +21,8 @@ Em `cvt seq velocity` o modelo prevê a velocidade **e** a faixa de ISL na mesma
 segunda cabeça de classificação. A faixa passa a ser aprendida direto, em vez de sair de um corte
 por limiar sobre a velocidade prevista.
 
-Análises complementares do risco (importância de features, Optuna) ficam em `notebooks/analise_risco.ipynb`.
+Análises complementares do risco (importância de features, Optuna) ficam fora da CLI, nas funções
+`importancia_features` e `otimizado` de `curvant/steps/train_risk.py`.
 
 ## 2. Targets
 

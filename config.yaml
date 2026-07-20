@@ -2,6 +2,11 @@
 huggingface:
   dataset_id: jwsouza13/routes_ML_inmetro
 
+# Dataset do pipeline: nome base ou caminho em data/ (com ou sem _clean/.parquet).
+# null = auto-detecta o primeiro disponível, preferindo o _clean. A flag --data sobrescreve.
+data:
+  dataset: null
+
 physics:
   mu: 0.6          # coeficiente de atrito lateral (asfalto seco ~0.6; molhado ~0.4)
   isl_baixo: 0.5   # ISL < 0.5  -> classe 'baixo'
@@ -60,7 +65,7 @@ montecarlo:
 # ===================== Modelos =====================
 
 # Parâmetros compartilhados pelos modelos tabulares (cvt tab risk|isl|velocity).
-# Também usado pela análise em notebooks/analise_risco.ipynb.
+# Também usado pelas análises complementares de train_risk (fora da CLI).
 ml:
   random_state: 42
   test_size: 0.3
@@ -68,7 +73,7 @@ ml:
   pca_n_components: null       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
 
 # Ajuste de hiperparâmetros (XGBoost + RandomForest + LogReg).
-# Usado pela análise complementar em notebooks/analise_risco.ipynb (etapa_ml_otimizado).
+# Usado pela análise complementar train_risk.otimizado (fora da CLI).
 optuna:
   n_trials_xgb: 50
   n_trials_rf: 30
@@ -92,15 +97,15 @@ temporais:
   peso_classe: 0.3             # λ da cabeça de classe
 
   target_cap_percentil: 99     # remove extremos acima deste percentil do target (null = sem filtro)
-  n_timesteps: 50              # comprimento fixo após reamostragem da janela
-  epochs: 400
+  n_timesteps: 100              # comprimento fixo após reamostragem da janela
+  epochs: 100
   batch_size: 32
   lr: 0.005
   dropout: 0.3
-  early_stopping_patience: 100 # épocas sem melhora na val_loss -> parar
+  early_stopping_patience: 150 # épocas sem melhora na val_loss -> parar
   val_size: 0.30               # fração do treino usada para validação
   weight_decay: 0.01           # L2 no Adam
   hidden_size: 64              # GRU / LSTM
-  n_layers: 1                  # GRU / LSTM
+  n_layers: 2                  # GRU / LSTM
   channels: [32, 64]           # CNN1D
   kernel_size: 3               # CNN1D
