@@ -10,6 +10,18 @@ import os
 
 _DIR_RISCO = 'results/tab/risk'
 
+
+def _filtrar_indefinidas(features_df, coluna: str = 'manobra_indefinida_curva'):
+    """Remove curvas na faixa de histerese do limiar, onde o rótulo é decidido por ruído."""
+    if coluna not in features_df.columns:
+        return features_df
+    filtrado = features_df[features_df[coluna] == 0]
+    n_desc = len(features_df) - len(filtrado)
+    if n_desc:
+        print(f"  Histerese: {n_desc} curvas indefinidas descartadas ({len(filtrado)} restantes)")
+    return filtrado
+
+
 def _tabela_criterios_risco(features_df, outdir: str) -> None:
     """Tabela da distribuição dos 3 critérios de risco por curva (alvo manobra)."""
     crit_cols = {
@@ -37,6 +49,7 @@ def classicos(features_df, cfg: dict, plot: bool):
     """Modelos clássicos para o alvo de risco (manobra), validação por rota."""
     from curvant.models import aplicar_modelos_ml
 
+    features_df = _filtrar_indefinidas(features_df)
     _tabela_criterios_risco(features_df, _DIR_RISCO)
     ml = cfg['ml']
     pca = ml.get('pca_n_components')
@@ -59,6 +72,7 @@ def otimizado(features_df, cfg: dict, plot: bool):
     """Modelos de risco com Optuna (XGB + RF + LogReg) e split por rota."""
     from curvant.models import aplicar_modelos_ml_otimizados
 
+    features_df = _filtrar_indefinidas(features_df)
     _tabela_criterios_risco(features_df, _DIR_RISCO)
     ml  = cfg['ml']
     opt = cfg.get('optuna', {})
@@ -88,15 +102,24 @@ def criterios_separados(features_df, cfg: dict, plot: bool = True) -> None:
         'manobra_lateral_curva':    ('Lateral (accel_y + DNIT)', 'lateral'),
         'manobra_ziguezague_curva': ('Zigue-zague', 'zigzag'),
     }
+    # Cada critério descarta as curvas indefinidas da SUA faixa de histerese;
+    # o zigue-zague não tem limiar contínuo, então não filtra nada.
+    indef_por_criterio = {
+        'manobra_accel_curva':   'manobra_accel_indef_curva',
+        'manobra_lateral_curva': 'manobra_lateral_indef_curva',
+    }
 
     for target, (label, slug) in criterios.items():
         if target not in features_df.columns:
             continue
-        n_pos = int(features_df[target].sum())
-        n_tot = len(features_df)
+        df_crit = features_df
+        if target in indef_por_criterio:
+            df_crit = _filtrar_indefinidas(features_df, indef_por_criterio[target])
+        n_pos = int(df_crit[target].sum())
+        n_tot = len(df_crit)
         print(f"\n  [{label}]  positivos: {n_pos}/{n_tot} ({100*n_pos/n_tot:.1f}%)")
         aplicar_modelos_ml(
-            features_df,
+            df_crit,
             plot_cm=plot,
             random_state=ml['random_state'],
             test_size=ml['test_size'],
@@ -122,6 +145,7 @@ def importancia_features(features_df, cfg: dict, top_n: int = 40) -> None:
     if target not in features_df.columns:
         print("  [importancia] target não encontrado, pulando.")
         return
+    features_df = _filtrar_indefinidas(features_df)
 
     MC_COLS = ['mc_p_baixo', 'mc_p_medio', 'mc_p_alto']
 

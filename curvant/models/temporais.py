@@ -636,6 +636,14 @@ def _treinar_um_neural(
         ax.plot(hist_train, label='treino', alpha=0.8)
         ax.plot(hist_val,   label='val',    alpha=0.8)
         ax.axvline(len(hist_train) - no_improve, color='r', linestyle='--', linewidth=0.8, label='best')
+        if task == 'regression':
+            # Alvo padronizado: MSE 1.0 equivale a prever sempre a média. Sem essa
+            # referência e com o eixo cortado, a queda da primeira época some e a
+            # curva parece chapada mesmo quando o modelo aprendeu quase tudo.
+            ax.axhline(1.0, color='gray', linestyle=':', linewidth=0.8, label='prever a média')
+            ax.set_ylim(0, max(1.05, 1.05 * max(hist_train + hist_val)))
+        else:
+            ax.set_ylim(bottom=0)
         ax.set_xlabel('Época'); ax.set_ylabel(loss_label)
         ax.set_title(f'Loss - {model_type.upper()} {task} {target}')
         ax.legend()

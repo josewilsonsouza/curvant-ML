@@ -271,6 +271,12 @@ def _alvos_manobra(curva: pd.DataFrame) -> dict:
         'manobra_ziguezague_curva': 1 if curva['manobra_ziguezague'].any() else 0,
         'manobra_combinado_curva':  1 if curva['manobra_combinado'].any() else 0,
     }
+    # Flags de histerese: curva na faixa morta do limiar (rótulo decidido por ruído).
+    # Usadas para descartar essas curvas do treino do risco, nunca como feature.
+    for alvo, col in (('manobra_indefinida_curva',   'manobra_indefinido'),
+                      ('manobra_accel_indef_curva',  'manobra_accel_indef'),
+                      ('manobra_lateral_indef_curva', 'manobra_lateral_indef')):
+        out[alvo] = 1 if col in curva.columns and curva[col].any() else 0
     out['manobra'] = out['manobra_combinado_curva']  # retrocompat
     return out
 

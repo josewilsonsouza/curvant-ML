@@ -42,6 +42,13 @@ def run(
 
     from curvant.models import treinar_regressao_ts
 
+    # Mesmo tratamento do tabular: curvas na faixa de histerese do limiar saem do alvo de risco.
+    if target == 'risk' and 'manobra_indefinida_curva' in features_df.columns:
+        n_desc = int(features_df['manobra_indefinida_curva'].sum())
+        if n_desc:
+            features_df = features_df[features_df['manobra_indefinida_curva'] == 0]
+            print(f"  Histerese: {n_desc} curvas indefinidas descartadas ({len(features_df)} restantes)")
+
     treinar_regressao_ts(
         df_analysis, features_df, cfg, feat_cfg,
         plot=plot,

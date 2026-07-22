@@ -11,6 +11,7 @@ def run(dfs_curves: pd.DataFrame, cfg: dict, mostrar_risco: bool = True) -> pd.D
             dt,
             kamm_alpha=da.get('kamm_alpha', 0.7),
             limiar_accel_lateral=da.get('limiar_accel_lateral', 2.0),
+            margem_histerese=da.get('margem_histerese', 0.0),
             zz_limiar_bearing=da.get('zigue_zague', {}).get('limiar_bearing', 15.0),
             zz_limiar_accel=da.get('zigue_zague', {}).get('limiar_ctp', 0.3),
             zz_min_mudancas=da.get('zigue_zague', {}).get('min_mudancas', 3),
@@ -28,5 +29,8 @@ def run(dfs_curves: pd.DataFrame, cfg: dict, mostrar_risco: bool = True) -> pd.D
         n_zz       = df_analysis['manobra_ziguezague'].sum()
         print(f"  Janelas — Risco: {n_perigosa} | Segura: {n_segura}")
         print(f"  Critérios — Accel: {n_accel} | Lateral: {n_lateral} | ZZ: {n_zz}")
+        n_indef = df_analysis['manobra_indefinido'].sum()
+        if n_indef:
+            print(f"  Indefinidas (histerese): {n_indef} janelas na faixa do limiar")
 
     return df_analysis

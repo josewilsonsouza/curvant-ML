@@ -16,7 +16,6 @@ _RAW_CANDIDATOS = [
     'data/eletro_rjdf_serra.parquet',
 ]
 
-
 def _nome_base(valor: str) -> str:
     """Caminho ou nome -> nome base do dataset (sem pasta, sem .parquet, sem _clean)."""
     nome = os.path.basename(valor)
@@ -25,7 +24,6 @@ def _nome_base(valor: str) -> str:
     if nome.endswith('_clean'):
         nome = nome[: -len('_clean')]
     return nome
-
 
 def _resolver_dataset(cfg: dict, arg_data: str | None) -> tuple[str, bool, str]:
     """Qual arquivo usar: --data > config data.dataset > auto-detecção.

@@ -17,6 +17,12 @@ def clipar_acelerometro(df: pd.DataFrame, limite: float = 5.0) -> pd.DataFrame:
     for col in ['accel_x', 'accel_y', 'accel_z']:
         if col in df.columns:
             df[col] = df[col].clip(-limite, limite)
+    # Picos intra-segundo (magnitudes) recebem o mesmo teto: pico_accel_y é |ay|,
+    # e pico_abs_accel é a norma de dois eixos, cujo máximo com clip é limite*sqrt(2).
+    if 'pico_accel_y' in df.columns:
+        df['pico_accel_y'] = df['pico_accel_y'].clip(0, limite)
+    if 'pico_abs_accel' in df.columns:
+        df['pico_abs_accel'] = df['pico_abs_accel'].clip(0, limite * np.sqrt(2))
     return df
 
 

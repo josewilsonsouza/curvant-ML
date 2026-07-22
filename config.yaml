@@ -5,7 +5,7 @@ huggingface:
 # Dataset do pipeline: nome base ou caminho em data/ (com ou sem _clean/.parquet).
 # null = auto-detecta o primeiro disponível, preferindo o _clean. A flag --data sobrescreve.
 data:
-  dataset: null
+  dataset: eletro_rjdf_serra_rjmgba_janeiro_agda_denso
 
 physics:
   mu: 0.6          # coeficiente de atrito lateral (asfalto seco ~0.6; molhado ~0.4)
@@ -50,6 +50,9 @@ risk_measures:
   kamm_alpha: 0.7              # alpha para o critério de Kamm
                                # 0.7 -> limiar = 0.7 × 0.6 × 9.81 ~ 4.12 m/s²
   limiar_accel_lateral: 2.0    # m/s² - |accel_y|_max mínimo p/ o critério lateral (DNIT >= média)
+  margem_histerese: 0.10       # faixa morta de +-10% ao redor dos limiares de Kamm e lateral:
+                               # pico dentro dela marca a curva como indefinida (rótulo decidido
+                               # por ruído de sensor) e ela sai do treino do risco. 0 desliga.
   zigue_zague:
     limiar_bearing: 15         # graus - mudança mínima de direção
     limiar_ctp: 0.3            # m/s² - aceleração centrípeta mínima (ctp_accel = v²/R)
@@ -83,7 +86,7 @@ optuna:
 # Modelos sobre a série temporal bruta pré-curva (cvt seq risk|isl|velocity).
 
 temporais:
-  model: [lstm]                #opções: gru | lstm | cnn1d | mlp | linear | rf | xgboost
+  model: [lstm, gru]                #opções: gru | lstm | cnn1d | mlp | linear | rf | xgboost
   task: auto                   # auto (detecta pelo target) | regression | classification
 
   # O ALVO não fica aqui: vem do subcomando (`cvt seq risk|isl|velocity`). Assim não dá para
@@ -91,10 +94,10 @@ temporais:
 
   # Multitarefa (só com o alvo `velocity`): além da velocidade, uma cabeça de classe prevê
   # isl_class direto, em vez de derivar a faixa cortando a velocidade por limiar. A velocidade
-  # segue como alvo principal (a parada antecipada olha o MSE dela). peso_classe (λ) pesa a
-  # perda da classe na soma L = MSE(v) + λ·CE(classe); baixo mantém a velocidade dominante.
+  # segue como alvo principal (a parada antecipada olha o MSE dela). peso_classe (lambda) pesa a
+  # perda da classe na soma L = MSE(v) + lambda·CE(classe); baixo mantém a velocidade dominante.
   multitarefa: true            # false = só velocidade (comportamento antigo)
-  peso_classe: 0.3             # λ da cabeça de classe
+  peso_classe: 0.3             # lambda da cabeça de classe
 
   target_cap_percentil: 99     # remove extremos acima deste percentil do target (null = sem filtro)
   n_timesteps: 100              # comprimento fixo após reamostragem da janela

@@ -32,10 +32,7 @@ São os dados brutos!
 """
 
 global dir_hf
-_hf_token = os.getenv('HF_TOKEN')
-if not _hf_token:
-    raise EnvironmentError("Variável de ambiente HF_TOKEN não definida. Execute: export HF_TOKEN=seu_token")
-login(token=_hf_token)
+login(token='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')
 dir_hf = 'jwsouza13/routes_ML_inmetro'
 
 def load_data_folder(folder):
@@ -63,6 +60,7 @@ data_rjdf = load_data_folder('RJ-DF')
 data_serra = load_data_folder('SERRA')
 data_rjmgba = load_data_folder('RJ-MG-BA')
 data_janeiro = load_data_folder('JANEIRO')
+data_agda = load_data_folder('AGDA')
 
 """# **Análise Exploratória Preliminar**
 Análise preliminar de cada base de dados: **ELETRONUCLEAR**, **RJ-DF** e **SERRA**. Conforme vai surgindo novos dados, vamos adicinando uma seção de tratamento para eles.
@@ -78,7 +76,7 @@ dfs = []
 for file in data_eletro:
 
   df = pd.read_csv(file, sep=';')
-  id = os.path.basename(file)
+  id = file.split('/')[-1]
   _,_,vehicle,_,_ = id.split('-')
   df = df.assign(id_route = id.replace('.csv',''),
                  vehicle = vehicle,
@@ -193,7 +191,7 @@ for dado in data_rjdf:
     # a condição é apenas fazendo a checam das colunas.
 
   df = df.rename(columns=dict(zip_cols)) # renomendo as colunas
-  df = df.assign(id_route = os.path.basename(dado).replace('.csv',''),
+  df = df.assign(id_route = dado.split('/')[-1].replace('.csv',''),
                  vehicle = 'nivus',
                  loc_coleta = 'rjdf')
 
@@ -245,7 +243,7 @@ dfs_serra = []
 for dado in data_serra:
   df_serra = pd.read_csv(dado, skiprows=1)
   df_serra = df_serra.rename(columns=dict(zip_cols))
-  df_serra = df_serra.assign(id_route = os.path.basename(dado).replace('.csv',''),
+  df_serra = df_serra.assign(id_route = dado.split('/')[-1].replace('.csv',''),
                               vehicle = 'jetta',
                               loc_coleta = 'serra')
 
@@ -394,7 +392,7 @@ for dado in data_rjmgba:
     # mantem colunas não duplicadas
     df_temp = df_temp.loc[:, ~df_temp.columns.duplicated()]
 
-    df_temp = df_temp.assign(id_route = os.path.basename(dado).replace('.csv',''),
+    df_temp = df_temp.assign(id_route = dado.split('/')[-1].replace('.csv',''),
                              vehicle = 'Cruze e Jetta',
                              loc_coleta = 'rjmgba')
     dfs_rjmgba.append(df_temp)
@@ -436,7 +434,7 @@ for dado in data_janeiro:
 
   df_temp = df_temp.rename(columns=rename_dict)
   df_temp = df_temp.loc[:, ~df_temp.columns.duplicated()]
-  df_temp = df_temp.assign(id_route = os.path.basename(dado).replace('.csv',''),
+  df_temp = df_temp.assign(id_route = dado.split('/')[-1].replace('.csv',''),
                                   vehicle = 'carro',
                                   loc_coleta = 'janeiro')
   dfs_janeiro.append(df_temp)
@@ -464,7 +462,85 @@ for route_id in df_janeiro['id_route'].unique():
 df_janeiro_v = pd.concat(new_df_janeiro)
 print("AGORA:", df_janeiro_v.shape, "ANTES:", df_janeiro_v.shape)
 
-"""## ⚙ Alguns ajustes"""
+"""# NOVOS PIDS - DATASET AGDA"""
+
+cols_orig_agda = [
+    'Time (sec)', ' Intake manifold absolute pressure (kPa)', ' Engine RPM (RPM)', ' Vehicle speed (km/h)',
+    ' Intake air temperature (°C)', ' Absolute throttle position (%)', ' Fuel level input (%)',
+    ' Fuel/Air commanded equivalence ratio', ' Relative throttle position (%)', ' Absolute throttle position B (%)',
+    ' Accelerator pedal position D (%)', ' Accelerator pedal position E (%)', ' Commanded throttle actuator control (%)',
+    ' Alcohol fuel percentage (%)', ' Instant fuel economy (l/100 km)', ' Total fuel economy (l/100 km)',
+    ' Fuel rate (l/hr)', ' Instant CO2 rate (g/km)', 'Total CO2 (kg)', ' CO2 flow (g/s)',
+    ' Trip Distance (km)', ' Trip Fuel (l)', ' Trip Fuel Economy (l/100 km)', ' Hard Brake Count', ' Hard Accel Count',
+    ' Latitude (deg)', ' Longitude (deg)', ' Altitude (m)', 'Bearing (deg)', ' GPS Speed (km/h)',
+    ' Horz Accuracy (m)', ' Accel X (m/s²)', ' Accel Y (m/s²)', 'Accel Z (m/s²)', ' Accel (Grav) X (m/s²)',
+    ' Accel (Grav) Y (m/s²)', ' Accel (Grav) Z (m/s²)', ' Rotation Rate X (deg/s)', ' Rotation Rate Y (deg/s)',
+    ' Rotation Rate Z (deg/s)', ' Magnetometer X (µT)', ' Magnetometer Y (µT)', ' Magnetometer Z (µT)'
+]
+
+cols_agda_new = [
+    'time', 'intake_manifold_abs_pressure', 'engine_rpm', 'vehicle_speed',
+    'intake_air_temp', 'absolute_throttle_pos', 'fuel_level',
+    'fuel_air_equivalence_ratio', 'relative_throttle_pos', 'absolute_throttle_pos_b',
+    'accelerator_pedal_pos_d', 'accelerator_pedal_pos_e', 'commanded_throttle_actuator_control',
+    'alcohol_fuel_percentage', 'instant_fuel_economy', 'total_fuel_economy',
+    'fuel_rate', 'instant_co2_rate', 'total_co2', 'co2_flow',
+    'trip_distance', 'trip_fuel', 'trip_fuel_economy', 'hard_brake_count', 'hard_accel_count',
+    'lat', 'lon', 'altitude', 'bearing', 'gps_speed',
+    'horz_accuracy', 'accel_x', 'accel_y', 'accel_z', 'accel_grav_x',
+    'accel_grav_y', 'accel_grav_z', 'rotation_rate_x', 'rotation_rate_y',
+    'rotation_rate_z', 'magnetometer_x', 'magnetometer_y', 'magnetometer_z'
+]
+
+zip_cols_agda = [(orig, new) for orig, new in zip(cols_orig_agda, cols_agda_new)]
+
+dfs_agda = []
+for dado in data_agda:
+  df_agda = pd.read_csv(dado, skiprows=1)
+  k = len(df_agda.columns.to_list())
+  if k == 1:
+    df_agda = pd.read_csv(dado, skiprows=2, sep=';')
+
+  current_cols = df_agda.columns.to_list()
+  rename_dict = {}
+
+  for orig_col, new_col in zip_cols_agda:
+    if orig_col in current_cols and orig_col not in rename_dict:
+      rename_dict[orig_col] = new_col
+
+  df_agda = df_agda.rename(columns=rename_dict)
+  df_agda = df_agda.loc[:, ~df_agda.columns.duplicated()]
+  df_agda = df_agda.assign(id_route = dado.split('/')[-1].replace('.csv',''),
+                           vehicle = 'carro',
+                           loc_coleta = 'agda')
+  dfs_agda.append(df_agda)
+
+df_agda = pd.concat(dfs_agda)
+df_agda.describe()
+
+fig, ax = plt.subplots(figsize=(12,6))
+ax.hist(df_agda.vehicle_speed, bins=100)
+ax.set_xlabel('Velocidade (km/h)')
+ax.set_ylabel('Frequência')
+
+new_df_agda = []
+for route_id in df_agda['id_route'].unique():
+    temp_df = df_agda[df_agda['id_route'] == route_id].copy()
+    first_non_zero_speed_idx = temp_df[temp_df['vehicle_speed'] != 0].index.min()
+    last_non_zero_speed_idx = temp_df[temp_df['vehicle_speed'] != 0].index.max()
+    if pd.isna(first_non_zero_speed_idx) or pd.isna(last_non_zero_speed_idx):
+        new_df_agda.append(temp_df)
+        print(f"Trip {route_id} não possui dados válidos.")
+    else:
+        new_df_agda.append(temp_df.loc[first_non_zero_speed_idx:last_non_zero_speed_idx])
+
+df_agda_v = pd.concat(new_df_agda)
+print("AGORA:", df_agda_v.shape, "ANTES:", df_agda_v.shape)
+
+"""---
+
+## ⚙ Alguns ajustes
+"""
 
 def latlon_to_cartesian(latitudes, longitudes):
   '''
@@ -497,8 +573,9 @@ trips_rjdf = df_rjdf_v.id_route.unique()
 trips_serra = dsv.id_route.unique()
 trips_rjmgba = df_rjmgba_v.id_route.unique()
 trips_janeiro = df_janeiro_v.id_route.unique()
+trips_agda = df_agda_v.id_route.unique()
 
-trips = list(trips_eletro) + list(trips_rjdf) + list(trips_serra) + list(trips_rjmgba) + list(trips_janeiro)
+trips = list(trips_eletro) + list(trips_rjdf) + list(trips_serra) + list(trips_rjmgba) + list(trips_janeiro) + list(trips_agda)
 
 for trip in trips:
 
@@ -512,10 +589,12 @@ for trip in trips:
     df = df_rjmgba_v.query(f'id_route == "{trip}"').copy()
   elif trip in trips_janeiro:
     df = df_janeiro_v.query(f'id_route == "{trip}"').copy()
+  elif trip in trips_agda:
+    df = df_agda_v.query(f'id_route == "{trip}"').copy()
 
   df.dropna(subset=['lat', 'lon'], inplace = True)
 
-  if len(set(['rjdf', 'serra', 'rjmgba', 'janeiro']) & set(df.loc_coleta.unique())) > 0:
+  if len(set(['rjdf', 'serra', 'rjmgba', 'janeiro','agda']) & set(df.loc_coleta.unique())) > 0:
     df['time_sec'] = df.time
   else:
     df.timestamp = pd.to_datetime(df.timestamp, format="mixed")
@@ -556,4 +635,9 @@ ax.hist(df_all.vehicle_speed, bins=100)
 ax.set_xlabel('Velocidade (km/h)')
 ax.set_ylabel('Frequência')
 
-df_all.to_parquet('eletro_rjdf_serra_rjmgba_janeiro.parquet', index=False)
+df_all.to_parquet('eletro_rjdf_serra_rjmgba_janeiro_agda.parquet', index=False)
+
+"""---
+
+
+"""
