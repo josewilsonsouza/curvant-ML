@@ -2,7 +2,7 @@
 Funções:
     classicos            - modelos clássicos (LogReg, SVM, RF, XGBoost, MLP...) no alvo combinado
     otimizado            - o mesmo com tuning Optuna (análise complementar)
-    criterios_separados  - um modelo por critério de risco (Kamm, lateral, zigue-zague)
+    criterios_separados  - um modelo por critério de risco (frenagem tardia, zigue-zague)
     importancia_features - importância XGBoost (gain) + ablação das mc_p_* (análise complementar)
 """
 
@@ -23,10 +23,9 @@ def _filtrar_indefinidas(features_df, coluna: str = 'manobra_indefinida_curva'):
 
 
 def _tabela_criterios_risco(features_df, outdir: str) -> None:
-    """Tabela da distribuição dos 3 critérios de risco por curva (alvo manobra)."""
+    """Tabela da distribuição dos critérios de risco por curva (alvo manobra)."""
     crit_cols = {
-        'manobra_accel_curva':      'Aceleração anormal',
-        'manobra_lateral_curva':    'Aceleração lateral',
+        'manobra_frenagem_curva':   'Frenagem tardia',
         'manobra_ziguezague_curva': 'Zigue-zague',
     }
     tab = features_df.groupby('manobra_combinado_curva')[list(crit_cols.keys())].sum().rename(columns=crit_cols)
@@ -41,7 +40,7 @@ def _tabela_criterios_risco(features_df, outdir: str) -> None:
         caption='Distribuição dos critérios de risco por curva — contagem de curvas Segura e Risco em que cada critério foi ativado.',
         label='tab:criterios_risco',
         position='h',
-        column_format='lcccc',
+        column_format='lccc',
     )
 
 
@@ -98,15 +97,13 @@ def criterios_separados(features_df, cfg: dict, plot: bool = True) -> None:
     pca = ml.get('pca_n_components')
 
     criterios = {
-        'manobra_accel_curva':      ('Kamm (aceleração total)', 'kamm'),
-        'manobra_lateral_curva':    ('Lateral (accel_y + DNIT)', 'lateral'),
+        'manobra_frenagem_curva':   ('Frenagem tardia', 'frenagem'),
         'manobra_ziguezague_curva': ('Zigue-zague', 'zigzag'),
     }
     # Cada critério descarta as curvas indefinidas da SUA faixa de histerese;
     # o zigue-zague não tem limiar contínuo, então não filtra nada.
     indef_por_criterio = {
-        'manobra_accel_curva':   'manobra_accel_indef_curva',
-        'manobra_lateral_curva': 'manobra_lateral_indef_curva',
+        'manobra_frenagem_curva': 'manobra_frenagem_indef_curva',
     }
 
     for target, (label, slug) in criterios.items():

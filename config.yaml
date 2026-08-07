@@ -30,8 +30,10 @@ curve_detection:
                      # Mantido em 0: a suavizadora foi testada e reprovada por reescrever
                      # ~20% dos rótulos de curva.
   limite_raio: 150   # m - raio máximo para marcar curva=True
-  raio_min: 5.0      # m - clip do raio para ctp_accel (usado no risco/zigue-zague); mantido
-                     # baixo para não mexer no alvo de risco.
+  raio_min: 20.0     # m - clip do raio para ctp_accel (usado no zigue-zague). Era 5.0, o que
+                     # deixava passar geometria impossível: 12.6% dos pontos em curva tinham
+                     # raio abaixo de 5 m (ruído de GPS) e 9.2% davam aceleração centrípeta
+                     # acima do limite de aderência. Alinhado agora com raio_min_isl.
   raio_min_isl: 20.0 # m - piso do raio SÓ para o rótulo de ISL (isl_class), isolado do ctp_accel
                      # acima. Um raio de B-spline abaixo disto é ruído de GPS (nenhuma estrada
                      # tomada em velocidade tem raio de poucos metros) e v²/R explodiria: com 5 m
@@ -46,13 +48,16 @@ curve_detection:
     aberta:       500    # R <= 500 m
     # suave: R > 500 m
 
+# Critérios de conduta de risco. Os antigos (Kamm e aceleração lateral) saíram em jul/2026:
+# vinham do acelerômetro, que é do celular da coleta e não acompanha a dinâmica do veículo
+# (correlação 0.055 com v²/R). Detalhe em docs/ANALISE_DADOS.md. O que ficou mede correção
+# do motorista já dentro da curva, usando só velocidade e GPS.
 risk_measures:
-  kamm_alpha: 0.7              # alpha para o critério de Kamm
-                               # 0.7 -> limiar = 0.7 × 0.6 × 9.81 ~ 4.12 m/s²
-  limiar_accel_lateral: 2.0    # m/s² - |accel_y|_max mínimo p/ o critério lateral (DNIT >= média)
-  margem_histerese: 0.10       # faixa morta de +-10% ao redor dos limiares de Kamm e lateral:
-                               # pico dentro dela marca a curva como indefinida (rótulo decidido
-                               # por ruído de sensor) e ela sai do treino do risco. 0 desliga.
+  limiar_desaceleracao: 2.0    # m/s² - frenagem dentro da curva que caracteriza correção tardia.
+                               # Marca ~26% das curvas; frear ANTES da curva não conta.
+  margem_histerese: 0.10       # faixa morta de +-10% ao redor do limiar de desaceleração:
+                               # valor dentro dela marca a curva como indefinida (rótulo decidido
+                               # por ruído de medida) e ela sai do treino do risco. 0 desliga.
   zigue_zague:
     limiar_bearing: 15         # graus - mudança mínima de direção
     limiar_ctp: 0.3            # m/s² - aceleração centrípeta mínima (ctp_accel = v²/R)

@@ -11,7 +11,7 @@ def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_risco: boo
     e que o trajeto completo (lat, lon) está disponível.
     """
     df_analysis = df_analysis.copy()
-    for col in ['manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado']:
+    for col in ['manobra_frenagem', 'manobra_ziguezague', 'manobra_combinado']:
         if col in df_analysis.columns:
             df_analysis[col] = df_analysis[col].astype(int)
 

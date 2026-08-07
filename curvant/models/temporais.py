@@ -32,8 +32,8 @@ _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
 
 # Targets de classificação e número de classes
 _TARGETS_BINARIOS_TS  = {
-    'manobra_combinado_curva', 'manobra_accel_curva',
-    'manobra_lateral_curva', 'manobra_ziguezague_curva',
+    'manobra_combinado_curva', 'manobra_frenagem_curva',
+    'manobra_ziguezague_curva',
 }
 _TARGETS_MULTICLASS_TS = {'isl_class': 3}
 _TARGETS_CLASSIF_TS    = _TARGETS_BINARIOS_TS | set(_TARGETS_MULTICLASS_TS)
@@ -616,8 +616,8 @@ def _treinar_um_neural(
 
         if (epoch + 1) % 20 == 0:
             extra = f"  CE(classe): {ep_ce:.4f}" if mt else ""
-            print(f"    Época {epoch + 1}/{epochs} - train MSE: {ep_mse:.4f}{extra}  "
-                  f"val MSE: {val_loss:.4f}  LR: {optimizer.param_groups[0]['lr']:.2e}")
+            print(f"    Época {epoch + 1}/{epochs} - train {loss_label}: {ep_mse:.4f}{extra}  "
+                  f"val {loss_label}: {val_loss:.4f}  LR: {optimizer.param_groups[0]['lr']:.2e}")
 
     if best_state is not None:
         model.load_state_dict(best_state)

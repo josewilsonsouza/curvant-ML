@@ -33,13 +33,12 @@ Todos são medidos **dentro da curva**, então nunca são usados como features.
 | Coluna | Descrição |
 |---|---|
 | `manobra_combinado_curva` | A curva foi de **Risco** (1) ou **Segura** (0). |
-| `manobra_accel_curva` | Critério do limite de aderência do pneu (círculo de Kamm): a aceleração total passou de uma fração do que o pneu aguenta. |
-| `manobra_lateral_curva` | Aceleração lateral alta numa curva fechada o bastante. |
+| `manobra_frenagem_curva` | Frenagem tardia: o motorista freou forte já dentro da curva, sinal de que não a antecipou. |
 | `manobra_ziguezague_curva` | Zigue-zague |
 | `isl_class` | A faixa de ISL: **baixo, medio ou alto**. |
 | `v_critica` | A velocidade (km/h) no ponto de maior risco da curva. |
 
-Os três critérios individuais de manobra não têm subcomando próprio: eles são treinados de
+Os dois critérios individuais de manobra não têm subcomando próprio: eles são treinados de
 brinde por `cvt tab risk`, para mostrar qual critério limita o F1 do alvo combinado.
 
 ### Como o `isl_class` é formado
@@ -83,12 +82,19 @@ As estatísticas básicas dos sensores na janela antes da curva. Para `vehicle_s
 
 > O `engine_rpm` está desligado no `features.yaml` (`extracao.vars_sensor`), então não há colunas de RPM.
 
+> [!NOTE]
+> Todas continuam sendo calculadas, mas a whitelist da representação tabular usa só parte delas
+> desde jul/2026. As cinco estatísticas de nível da velocidade (`_mean`, `_median`, `_max`,
+> `_min`, `_mean_tarde`) tinham correlação acima de 0,95 entre si, então ficou apenas
+> `vehicle_speed_min`, que é a mais correlacionada com os alvos. As medidas de dispersão e
+> tendência (`_std`, `_cv`, `_slope`, `_slope_tarde`) continuam, porque medem outra coisa.
+
 ### Grupo 2 - Dinâmica derivada da aproximação (11 colunas)
-- `jerk_x_max`, `jerk_x_std`, `jerk_y_max`, `jerk_y_std`: o jerk é a variação brusca da aceleração.
+- `jerk_x_max`, `jerk_x_std`, `jerk_y_max`, `jerk_y_std`: o jerk é a variação brusca da aceleração. Cada par (max e std do mesmo eixo) tem correlação acima de 0,99, então a whitelist tabular leva só `jerk_x_std` e `jerk_y_max`.
 - `n_perigo_accel_precurva`, `n_perigo_lateral_precurva`: quantas vezes a aceleração passou de um limite na janela.
 - `precurva_abs_accel_max`: máximo de $\sqrt{(a_x^2+a_y^2)}$ na janela pré-curva
 - `distance_car_curve`: o comprimento da janela pré-curva (a distância coberta pela aproximação). ⚠️ **Não é** a distância até a curva, veja a nota abaixo.
-- `precurva_bearing_std`: desvio padrão das variações de bearing (Δθ) na janela pré-curva
+- `precurva_bearing_std`: desvio padrão das variações de bearing (Δθ) na janela pré-curva. Correlação de 0,99 com a amplitude abaixo, então fica fora da whitelist tabular.
 - `precurva_bearing_range`: amplitude total do bearing na janela (max − min)
 - `precurva_n_mudancas_dir`: contagem de alternâncias de sinal de Δbearing (|Δθ| > 15°) na janela
 

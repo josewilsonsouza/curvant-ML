@@ -26,17 +26,19 @@ flags:
   # Representação TABULAR (`cvt tab <alvo>`): lista chapada de features agregadas por curva.
   # Compartilhada pelos três alvos tabulares (risk, isl, velocity), porque as features
   # pré-curva são as mesmas; o que muda entre eles é só o alvo.
+  # Redundância removida em jul/2026: cinco estatísticas de nível da velocidade tinham
+  # correlação acima de 0.95 entre si, e o mesmo valia para os dois pares de jerk e para as
+  # duas medidas de bearing. Ficou um representante de cada grupo, escolhido pela correlação
+  # com os alvos. Verificado nos três alvos tabulares: a variação de desempenho ficou entre
+  # -0.006 e +0.008, dentro do ruído. As medidas de dispersão e tendência da velocidade (std,
+  # cv, slope) continuam, porque medem outra coisa e não estavam no grupo redundante.
   tab:
     features:
       # estatísticas da velocidade na janela pré-curva
-      - vehicle_speed_mean
+      - vehicle_speed_min          # representa o grupo de nível (mean/median/max/mean_tarde)
       - vehicle_speed_std
-      - vehicle_speed_median
-      - vehicle_speed_max
-      - vehicle_speed_min
       - vehicle_speed_slope
       - vehicle_speed_cv
-      - vehicle_speed_mean_tarde
       - vehicle_speed_slope_tarde
       # estatísticas da aceleração longitudinal
       - accel_x_mean
@@ -57,17 +59,14 @@ flags:
       - accel_y_mean_tarde
       - accel_y_slope_tarde
       # jerk (derivada da aceleração) e contagens de eventos na janela
-      - jerk_x_max
-      - jerk_x_std
-      - jerk_y_max
-      - jerk_y_std
+      - jerk_x_std                 # representa o par jerk_x (max/std)
+      - jerk_y_max                 # representa o par jerk_y (max/std)
       - distance_car_curve
       - n_perigo_accel_precurva
       - precurva_abs_accel_max
       - n_perigo_lateral_precurva
-      - precurva_bearing_std
       - precurva_n_mudancas_dir
-      - precurva_bearing_range
+      - precurva_bearing_range     # representa o par bearing (std/range)
       # raio da trajetória na janela pré-curva
       - precurva_raio_min
       - precurva_raio_mean

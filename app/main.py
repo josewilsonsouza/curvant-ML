@@ -80,8 +80,8 @@ def _executar_pipeline(data_path: str, cfg: dict, feat_cfg: dict):
     with contextlib.redirect_stdout(io.StringIO()):
         df_analysis = label_driving.run(dfs_curves, cfg, mostrar_risco=False)
 
-    df_analysis[["manobra_accel", "manobra_lateral", "manobra_ziguezague"]] = (
-        df_analysis[["manobra_accel", "manobra_lateral", "manobra_ziguezague"]].astype(int)
+    df_analysis[["manobra_frenagem", "manobra_ziguezague"]] = (
+        df_analysis[["manobra_frenagem", "manobra_ziguezague"]].astype(int)
     )
 
     with contextlib.redirect_stdout(io.StringIO()):
@@ -181,8 +181,7 @@ else:
     subset = features_df
 
 _CRITERIOS_MAPA = {
-    "Kamm (aceleração total)": "manobra_accel_curva",
-    "Lateral (accel_y + DNIT)": "manobra_lateral_curva",
+    "Frenagem tardia": "manobra_frenagem_curva",
     "Zigue-zague": "manobra_ziguezague_curva",
 }
 criterios_sel = st.sidebar.multiselect(
@@ -282,16 +281,11 @@ if visao == "Curva selecionada":
 
     st.markdown("**Critérios ativos durante a curva:**")
     _rm = cfg["risk_measures"]
-    _kamm_lim = _rm["kamm_alpha"] * cfg["physics"]["mu"] * 9.81
     _criterios = [
         (
-            "manobra_accel_curva", "Aceleração anormal (Kamm)",
-            f"Círculo de Kamm: √(aₓ²+a_y²) > {_kamm_lim:.2f} m/s² "
-            f"({_rm['kamm_alpha']} × μ{cfg['physics']['mu']} × g) em pelo menos um ponto da curva.",
-        ),
-        (
-            "manobra_lateral_curva", "Direção perigosa (lateral)",
-            f"|accel_y| > {_rm['limiar_accel_lateral']} m/s² em curva aberta ou mais fechada (R ≤ 500 m).",
+            "manobra_frenagem_curva", "Frenagem tardia",
+            f"Desaceleração > {_rm['limiar_desaceleracao']} m/s² já dentro da curva, "
+            f"medida pela variação da velocidade. Indica que o motorista não antecipou a curva.",
         ),
         (
             "manobra_ziguezague_curva", "Zigue-zague",
@@ -300,8 +294,8 @@ if visao == "Curva selecionada":
             f"e ctp_accel > {_rm['zigue_zague']['limiar_ctp']} m/s².",
         ),
     ]
-    ca, cb, cc_ = st.columns(3)
-    for col, (flag_col, nome, descricao) in zip([ca, cb, cc_], _criterios):
+    ca, cb = st.columns(2)
+    for col, (flag_col, nome, descricao) in zip([ca, cb], _criterios):
         ativo = bool(feat_row[flag_col])
         col.metric(label=nome, value="🔴 Ativo" if ativo else "⚪ Inativo", help=descricao)
 
@@ -456,8 +450,8 @@ if visao == "Curva selecionada":
     rota_feat = features_df[features_df["id_route"] == rota_sel].copy()
     rota_feat["Classe"] = rota_feat["manobra"].map({0: "Segura", 1: "Perigosa"})
     rota_feat["Critério"] = rota_feat.apply(
-        lambda r: ("Accel" if r["manobra_accel_curva"] else "")
-        + ("+" if r["manobra_accel_curva"] and r["manobra_ziguezague_curva"] else "")
+        lambda r: ("Frenagem" if r["manobra_frenagem_curva"] else "")
+        + ("+" if r["manobra_frenagem_curva"] and r["manobra_ziguezague_curva"] else "")
         + ("ZZ" if r["manobra_ziguezague_curva"] else "")
         or "Nenhum",
         axis=1,
@@ -592,7 +586,7 @@ else:  # Visão geral do local
 
     st.subheader("Tabela de curvas")
     tbl = local_feat[["id_route", "id_trecho_curvo", "Classe",
-                       "manobra_accel_curva", "manobra_lateral_curva",
+                       "manobra_frenagem_curva",
                        "manobra_ziguezague_curva"]].copy()
-    tbl.columns = ["Trajeto", "Curva", "Classe", "Kamm", "Lateral", "Zigue-zague"]
+    tbl.columns = ["Trajeto", "Curva", "Classe", "Frenagem tardia", "Zigue-zague"]
     st.dataframe(tbl.reset_index(drop=True), width="stretch", height=300)

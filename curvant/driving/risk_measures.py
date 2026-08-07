@@ -1,14 +1,30 @@
+"""Critérios de conduta de risco em curva, medidos só com GPS e velocidade.
+
+Os critérios antigos de Kamm e de aceleração lateral foram removidos em jul/2026.
+Eles vinham do acelerômetro, que é do celular usado na coleta e não da central do
+veículo. A análise em docs/ANALISE_DADOS.md mostra que esse sensor não acompanha a
+dinâmica do carro: a correlação entre a leitura lateral e a aceleração centrípeta
+calculada pela física fica em 0,055, o sinal não inverte entre curvas para a
+esquerda e para a direita, e a melhor reorientação linear possível recupera 0,3%
+do sinal. Como controle, a aceleração longitudinal calculada pelo GPS concorda com
+a calculada pelo OBD a 0,712, então a grandeza é mensurável e o problema é do
+sensor, não do método.
+
+O que sobrou mede conduta, não exigência da curva: o motorista precisou corrigir
+depois de já estar na curva, seja freando forte (frenagem tardia) ou alternando a
+direção (zigue-zague). A velocidade de entrada comparada à velocidade segura ficou
+de fora de propósito: ela é reproduzível com F1 0,91 a partir da velocidade de
+aproximação e do raio, que são as próprias features, então prever esse rótulo não
+ensinaria nada. Essa dimensão continua coberta pelos alvos de ISL e v_critica.
+"""
 import numpy as np
 import pandas as pd
-
-from curvant.constants import G as _G, MU as _MU
 
 _DNIT_RISCO: dict[str, int] = {
     'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4,
 }
-_RISCO_MIN_DIRECAO = 1  # aberta (R ≤ 500 m) ou mais fechada; era 2 (media, R ≤ 200 m), mas
-                        # o raio B-spline tem ruído suficiente para classificar curvas de 100–150 m
-                        # como 'aberta', bloqueando o gate mesmo com accel_y elevado
+
+_ACCEL_MAX_PLAUSIVEL = 6.0  # m/s² - acima disso é falha de leitura da velocidade, não frenagem
 
 
 def calcular_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -20,10 +36,38 @@ def calcular_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> floa
     return (np.degrees(np.arctan2(x, y)) + 360) % 360
 
 
+def _desaceleracao_maxima(janela: pd.DataFrame) -> float:
+    """Maior desaceleração (m/s², positiva) observada DENTRO do segmento de curva.
+
+    Calculada pela variação da velocidade entre pontos consecutivos do próprio
+    segmento, então mede a frenagem depois que o carro já entrou na curva. Frear
+    antes da curva é condução prudente e não entra aqui.
+
+    A velocidade é o sensor confiável do conjunto: a aceleração longitudinal obtida
+    dela pelo GPS e pelo OBD concorda a 0,712, o que valida tanto a grandeza quanto
+    o cálculo.
+    """
+    if not {'vehicle_speed', 'dt'} <= set(janela.columns) or len(janela) < 2:
+        return 0.0
+
+    v_ms = janela['vehicle_speed'].values.astype(float) / 3.6
+    dt   = janela['dt'].values.astype(float)[1:]
+    dv   = np.diff(v_ms)
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        a_long = np.where(dt > 0, dv / dt, np.nan)
+
+    a_long = a_long[np.isfinite(a_long) & (np.abs(a_long) <= _ACCEL_MAX_PLAUSIVEL)]
+    if a_long.size == 0:
+        return 0.0
+
+    return float(max(-a_long.min(), 0.0))
+
+
 def _detectar_zigue_zague(
     janela: pd.DataFrame,
     limiar_bearing: float = 15.0,
-    limiar_accel_lateral: float = 0.3,
+    limiar_ctp: float = 0.3,
     min_mudancas: int = 3,
     vel_min_kmh: float = 5.0,
 ) -> bool:
@@ -49,7 +93,7 @@ def _detectar_zigue_zague(
     for i in range(1, len(bearings)):
         # preserva o sinal: positivo = virou à direita, negativo = à esquerda
         mudanca = (bearings[i] - bearings[i - 1] + 180) % 360 - 180
-        if abs(mudanca) > limiar_bearing and abs(ctp[i]) > limiar_accel_lateral:
+        if abs(mudanca) > limiar_bearing and abs(ctp[i]) > limiar_ctp:
             sinal = int(np.sign(mudanca))
             if sinal != ultimo_sinal:   # alternância real de direção
                 contador     += 1
@@ -63,90 +107,76 @@ def _detectar_zigue_zague(
 
 def caracterizar_janela(
     janela: pd.DataFrame,
-    kamm_alpha: float = 0.7,
-    limiar_accel_lateral: float = 2.0,
+    limiar_desaceleracao: float = 2.0,
     zz_limiar_bearing: float = 15.0,
-    zz_limiar_accel: float = 0.3,
+    zz_limiar_ctp: float = 0.3,
     zz_min_mudancas: int = 3,
     margem_histerese: float = 0.0,
 ) -> dict:
-    """Aplica os três critérios de risco a uma janela de tempo. Retorna dict de bools.
+    """Aplica os dois critérios de conduta a um segmento de curva. Retorna dict de bools.
 
-    Critério 1 — Círculo de Kamm:
-        max_t sqrt(accel_x² + accel_y²) > alpha * mu * g
-        Detecta qualquer instante em que o vetor de aceleração total ultrapassa
-        uma fração alpha do limite de aderência disponível.
+    Critério 1 — Frenagem tardia:
+        max(-dv/dt) dentro da curva > limiar_desaceleracao
+        O motorista freou forte depois de já estar na curva, sinal de que não
+        antecipou o que vinha pela frente.
 
-    Com margem_histerese > 0, um pico a menos dessa fração do limiar (de Kamm ou
-    do lateral) marca o critério como indefinido: tão perto do limiar, o rótulo
-    binário é decidido pelo ruído do sensor, não pelo comportamento. O rótulo em
-    si não muda; as flags *_indef permitem descartar essas janelas do treino.
-    O zigue-zague é contagem de alternâncias, sem limiar contínuo, então não
-    participa da histerese.
+    Critério 2 — Zigue-zague:
+        alternâncias de direção acima do limiar de bearing, com curvatura mínima.
+        O motorista corrigiu a trajetória mais de uma vez dentro da curva.
+
+    Com margem_histerese > 0, uma desaceleração a menos dessa fração do limiar marca
+    o critério como indefinido: tão perto do limiar, o rótulo binário é decidido pelo
+    ruído da medida e não pelo comportamento. O rótulo em si não muda; a flag
+    *_indef permite descartar essas janelas do treino. O zigue-zague é contagem de
+    alternâncias, sem limiar contínuo, então não participa da histerese.
     """
-    kamm_limite = kamm_alpha * _MU * _G
-    # pico_abs_accel/pico_accel_y (quando existem) trazem o pico intra-segundo do
-    # acelerômetro, preservado na geração do dataset; a leitura instantânea a 1 Hz
-    # perde mais da metade dos picos reais que definem estes critérios.
-    if 'pico_abs_accel' in janela.columns:
-        accel_max = float(janela['pico_abs_accel'].max())
-    else:
-        accel_max = float(np.sqrt(janela['accel_x'].values**2 + janela['accel_y'].values**2).max())
-    manobra_accel = bool(accel_max > kamm_limite)
+    desaceleracao     = _desaceleracao_maxima(janela)
+    manobra_frenagem  = bool(desaceleracao > limiar_desaceleracao)
 
+    m = margem_histerese
+    frenagem_indef = bool(
+        m > 0
+        and limiar_desaceleracao * (1 - m) < desaceleracao < limiar_desaceleracao * (1 + m)
+    )
+
+    manobra_ziguezague = _detectar_zigue_zague(
+        janela, zz_limiar_bearing, zz_limiar_ctp, zz_min_mudancas
+    )
+
+    # Descritivo da geometria, mantido para as análises; não entra em nenhum critério.
     risco_dnit = (
         int(janela['classe_dnit'].map(_DNIT_RISCO).max())
         if 'classe_dnit' in janela.columns else 3
     )
-    if 'pico_accel_y' in janela.columns:
-        accel_lateral_max = float(janela['pico_accel_y'].max())
-    else:
-        accel_lateral_max = float(janela['accel_y'].abs().max())
-    gate_dnit         = risco_dnit >= _RISCO_MIN_DIRECAO
-    manobra_lateral   = bool(gate_dnit and accel_lateral_max > limiar_accel_lateral)
-
-    m = margem_histerese
-    accel_indef   = bool(m > 0 and kamm_limite * (1 - m) < accel_max < kamm_limite * (1 + m))
-    lateral_indef = bool(
-        m > 0 and gate_dnit
-        and limiar_accel_lateral * (1 - m) < accel_lateral_max < limiar_accel_lateral * (1 + m)
-    )
-
-    manobra_ziguezague = _detectar_zigue_zague(
-        janela, zz_limiar_bearing, zz_limiar_accel, zz_min_mudancas
-    )
 
     return {
-        'manobra_accel_indef':   accel_indef,
-        'manobra_lateral_indef': lateral_indef,
-        'manobra_accel':      manobra_accel,
-        'manobra_lateral':    manobra_lateral,
-        'manobra_ziguezague': manobra_ziguezague,
-        'risco_dnit':         risco_dnit,
+        'manobra_frenagem_indef': frenagem_indef,
+        'manobra_frenagem':       manobra_frenagem,
+        'manobra_ziguezague':     manobra_ziguezague,
+        'risco_dnit':             risco_dnit,
     }
 
 
 def caracterizar_conducao(
     df: pd.DataFrame,
-    kamm_alpha: float = 0.7,
-    limiar_accel_lateral: float = 2.0,
+    limiar_desaceleracao: float = 2.0,
     margem_histerese: float = 0.0,
     **zz_kwargs,
 ) -> pd.DataFrame:
     """
     Caracteriza risco por segmento de curva (trecho contíguo curva=True).
 
-    Para cada segmento, avalia os três critérios sobre os pontos do segmento.
+    Para cada segmento, avalia os dois critérios sobre os pontos do segmento.
     Os rótulos são atribuídos apenas aos pontos do segmento; pontos fora de
     curvas recebem False/Segura.
 
     O combinado é indefinido quando nenhum critério é claramente positivo (fora
-    da faixa de histerese) e pelo menos um caiu dentro dela: nesse caso o OR
-    poderia flipar com o ruído do sensor.
+    da faixa de histerese) e a frenagem caiu dentro dela: nesse caso o OR
+    poderia flipar com o ruído da medida.
     """
     _cols = [
-        'manobra_accel', 'manobra_lateral', 'manobra_ziguezague', 'manobra_combinado',
-        'manobra_accel_indef', 'manobra_lateral_indef', 'manobra_indefinido',
+        'manobra_frenagem', 'manobra_ziguezague', 'manobra_combinado',
+        'manobra_frenagem_indef', 'manobra_indefinido',
     ]
 
     df_out = df.sort_values('time_sec').copy()
@@ -167,28 +197,25 @@ def caracterizar_conducao(
             continue
 
         r    = caracterizar_janela(
-            bloco, kamm_alpha, limiar_accel_lateral,
+            bloco, limiar_desaceleracao,
             margem_histerese=margem_histerese, **zz_kwargs,
         )
-        comb  = r['manobra_accel'] or r['manobra_lateral'] or r['manobra_ziguezague']
+        comb  = r['manobra_frenagem'] or r['manobra_ziguezague']
         claro = (
-            (r['manobra_accel'] and not r['manobra_accel_indef'])
-            or (r['manobra_lateral'] and not r['manobra_lateral_indef'])
+            (r['manobra_frenagem'] and not r['manobra_frenagem_indef'])
             or r['manobra_ziguezague']
         )
-        indef = (not claro) and (r['manobra_accel_indef'] or r['manobra_lateral_indef'])
+        indef = (not claro) and r['manobra_frenagem_indef']
 
         idx = bloco.index
-        df_out.loc[idx, 'manobra_accel']         = r['manobra_accel']
-        df_out.loc[idx, 'manobra_lateral']       = r['manobra_lateral']
-        df_out.loc[idx, 'manobra_ziguezague']    = r['manobra_ziguezague']
-        df_out.loc[idx, 'manobra_combinado']     = comb
-        df_out.loc[idx, 'manobra_accel_indef']   = r['manobra_accel_indef']
-        df_out.loc[idx, 'manobra_lateral_indef'] = r['manobra_lateral_indef']
-        df_out.loc[idx, 'manobra_indefinido']    = indef
-        df_out.loc[idx, 'conducao']              = 'Perigosa' if comb else 'Segura'
-        df_out.loc[idx, 'risco_dnit']            = r['risco_dnit']
-        df_out.loc[idx, 'id_janela']             = id_janela
+        df_out.loc[idx, 'manobra_frenagem']       = r['manobra_frenagem']
+        df_out.loc[idx, 'manobra_ziguezague']     = r['manobra_ziguezague']
+        df_out.loc[idx, 'manobra_combinado']      = comb
+        df_out.loc[idx, 'manobra_frenagem_indef'] = r['manobra_frenagem_indef']
+        df_out.loc[idx, 'manobra_indefinido']     = indef
+        df_out.loc[idx, 'conducao']               = 'Perigosa' if comb else 'Segura'
+        df_out.loc[idx, 'risco_dnit']             = r['risco_dnit']
+        df_out.loc[idx, 'id_janela']              = id_janela
         id_janela += 1
 
     return df_out.drop(columns=['_bloco'])
