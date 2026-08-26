@@ -3,7 +3,7 @@ Funções:
     classicos            - modelos clássicos (LogReg, SVM, RF, XGBoost, MLP...) no alvo combinado
     otimizado            - o mesmo com tuning Optuna (análise complementar)
     criterios_separados  - um modelo por critério de risco (frenagem tardia, zigue-zague)
-    importancia_features - importância XGBoost (gain) + ablação das mc_p_* (análise complementar)
+    importancia_features - importância XGBoost (gain) por feature (análise complementar)
 """
 
 import os
@@ -129,7 +129,7 @@ def criterios_separados(features_df, cfg: dict, plot: bool = True) -> None:
 
 
 def importancia_features(features_df, cfg: dict, top_n: int = 40) -> None:
-    """Treina XGBoost, plota importância das features (gain) e faz ablação das mc_p_*."""
+    """Treina XGBoost e plota a importância das features por ganho."""
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
@@ -144,54 +144,34 @@ def importancia_features(features_df, cfg: dict, top_n: int = 40) -> None:
         return
     features_df = _filtrar_indefinidas(features_df)
 
-    MC_COLS = ['mc_p_baixo', 'mc_p_medio', 'mc_p_alto']
-
     feature_cols = colunas_features(features_df)
     X_train, X_test, y_train, y_test, _ = _split_por_rota(
         features_df, target=target,
         test_size=ml['test_size'], random_state=ml['random_state'],
     )
 
-    mc_presentes = [c for c in MC_COLS if c in feature_cols]
-    idx_full   = list(range(len(feature_cols)))
-    idx_sem_mc = [i for i, c in enumerate(feature_cols) if c not in MC_COLS]
+    clf = XGBClassifier(n_estimators=200, random_state=ml['random_state'], eval_metric='logloss')
+    clf.fit(X_train, y_train)
+    pred  = clf.predict(X_test)
+    proba = clf.predict_proba(X_test)[:, 1]
 
-    def _treinar_avaliar(X_tr, X_te, y_tr, y_te, idx):
-        clf = XGBClassifier(n_estimators=200, random_state=ml['random_state'], eval_metric='logloss')
-        clf.fit(X_tr[:, idx], y_tr)
-        pred  = clf.predict(X_te[:, idx])
-        proba = clf.predict_proba(X_te[:, idx])[:, 1]
-        return clf, {
-            'acc': accuracy_score(y_te, pred),
-            'f1':  f1_score(y_te, pred, zero_division=0),
-            'auc': roc_auc_score(y_te, proba),
-        }
+    print()
+    print('  XGBoost no conjunto de teste:')
+    print(f"  acc {accuracy_score(y_test, pred):.4f} | "
+          f"f1 {f1_score(y_test, pred, zero_division=0):.4f} | "
+          f"auc {roc_auc_score(y_test, proba):.4f}")
 
-    clf_full, m_full   = _treinar_avaliar(X_train, X_test, y_train, y_test, idx_full)
-    _,        m_sem_mc = _treinar_avaliar(X_train, X_test, y_train, y_test, idx_sem_mc)
-
-    print(f"\n  Ablação das features Monte Carlo ({', '.join(mc_presentes) or 'nenhuma encontrada'}):")
-    print(f"  {'Métrica':<8}  {'Com MC':>8}  {'Sem MC':>8}  {'Delta':>8}")
-    print(f"  {'-'*40}")
-    for metrica in ('acc', 'f1', 'auc'):
-        v_full  = m_full[metrica]
-        v_semmc = m_sem_mc[metrica]
-        delta   = v_full - v_semmc
-        sinal   = '+' if delta >= 0 else ''
-        print(f"  {metrica:<8}  {v_full:>8.4f}  {v_semmc:>8.4f}  {sinal}{delta:>7.4f}")
-
-    importances = clf_full.feature_importances_
+    importances = clf.feature_importances_
     indices     = importances.argsort()[::-1][:top_n]
     top_feats   = [feature_cols[i] for i in indices]
     top_vals    = importances[indices]
 
     fig, ax = plt.subplots(figsize=(8, max(4, top_n * 0.25)))
-    colors = ['tab:orange' if f in MC_COLS else 'tab:blue' for f in top_feats[::-1]]
-    ax.barh(range(len(top_feats)), top_vals[::-1], color=colors)
+    ax.barh(range(len(top_feats)), top_vals[::-1], color='tab:blue')
     ax.set_yticks(range(len(top_feats)))
     ax.set_yticklabels(top_feats[::-1], fontsize=8)
     ax.set_xlabel('Importância (gain)')
-    ax.set_title(f'XGBoost — Top {top_n} features ({target})  [laranja = Monte Carlo]')
+    ax.set_title(f'XGBoost - Top {top_n} features ({target})')
     fig.tight_layout()
     os.makedirs(_DIR_RISCO, exist_ok=True)
     caminho = os.path.join(_DIR_RISCO, 'importancia_features.pdf')
@@ -201,5 +181,4 @@ def importancia_features(features_df, cfg: dict, top_n: int = 40) -> None:
     print(f"\n  Importância das features salva em {caminho}")
     print(f"  Top 10 features:")
     for i in range(min(10, len(top_feats))):
-        mc_flag = ' [MC]' if top_feats[i] in MC_COLS else ''
-        print(f"    {i+1:2d}. {top_feats[i]:<40s} {top_vals[i]:.4f}{mc_flag}")
+        print(f"    {i+1:2d}. {top_feats[i]:<40s} {top_vals[i]:.4f}")

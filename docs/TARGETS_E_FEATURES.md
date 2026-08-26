@@ -68,7 +68,6 @@ Estão prontos no `features_df`, mas nenhum subcomando os treina. Servem de mate
 | `isl_p95` | O ISL robusto da curva, que dá origem ao `isl_class`. |
 | `isl_max` / `isl_mean` | ISL máximo e médio da curva. O máximo é sensível a ponto de ruído, por isso não é ele que forma a faixa. |
 | `isl_alto` | Sinal de sim/não: o ISL passou de 0,8? |
-| `isl_sensor_max` / `_mean` / `_class` | Uma versão do ISL calculada pelo **acelerômetro** (\|accel_y\|/g·μ) em vez do raio do GPS. Não depende do raio, então não sofre com ruído de GPS. |
 
 
 ## 3. As features
@@ -103,17 +102,30 @@ As estatísticas básicas dos sensores na janela antes da curva. Para `vehicle_s
 ### Grupo 3 - Geometria da janela pré-curva (3 colunas)
 `precurva_raio_min`, `precurva_raio_mean`, `precurva_raio_last`: o raio da pista durante a aproximação, pois mede o quanto a estrada já estava curvando antes da curva-alvo.
 
-### Grupo 4 - Geometria da curva à frente (3 colunas)
-`f4_raio_min`, `f4_raio_mean`, `f4_dnit_num`: o raio real da curva que vem pela frente e a sua classe oficial (seguindo o DNIT). Isso sob a suposição de que a rota é conhecida de antemão.
+### Grupo 4 - Geometria da curva à frente (1 coluna)
+`f4_raio_min`: o menor raio da curva que vem pela frente, sob a suposição de que a rota é
+conhecida de antemão. `f4_raio_mean` e `f4_dnit_num` continuam sendo calculadas mas saíram da
+whitelist em ago/2026, por serem a mesma grandeza repetida (correlação de 0,948 e 0,843 com o
+mínimo, e desempenho pior nos dois alvos).
 
-### Grupo 5 - Contexto das curvas anteriores (5 colunas)
+Uma ressalva que vale registrar: esse raio não vem de mapa, vem da B-spline ajustada ao GPS da
+própria passagem, nos mesmos pontos que geram o rótulo de ISL. Feature e alvo compartilham a
+mesma realização de ruído, então parte do acerto nos alvos de ISL e velocidade vem daí. Resolver
+isso de verdade exigiria a geometria de um mapa, que é o que a suposição acima já assume.
+
+### Grupo 5 - Contexto das curvas anteriores (4 colunas)
 Olham para o histórico do trajeto até aqui, usando só as curvas **anteriores**: `n_curvas_antes`,
 `prev_isl_max` (ISL da curva imediatamente anterior), `mean_isl_antes` (ISL médio de todas as
-curvas anteriores), `prev_raio_min`, `prev_raio_mean`, `prev_dnit_num` (geometria da curva
-imediatamente anterior).
+curvas anteriores) e `prev_raio_min` (o menor raio da curva imediatamente anterior).
+`prev_raio_mean` e `prev_dnit_num` saíram da whitelist na mesma poda do grupo 4.
 
-### Grupo 6 - Monte Carlo (3 colunas)
-`mc_p_baixo`, `mc_p_medio`, `mc_p_alto`: uma simulação que, a partir da velocidade na aproximação e do raio da curva, estima a probabilidade de cada classe de ISL. Na prática é um "chute físico" embutido como feature, e que também foi usado para comparar com o modelo.
+### O grupo de Monte Carlo foi removido
+Havia um sexto grupo, `mc_p_baixo` / `mc_p_medio` / `mc_p_alto`, que simulava a velocidade de
+entrada e devolvia a probabilidade de cada classe de ISL. Ele saiu em ago/2026 junto com o
+módulo que o produzia. O motivo é que a simulação usava o raio cru enquanto o rótulo de ISL
+aplica um piso de 20 m, então os dois calculavam a mesma física com regras diferentes. Nas 523
+curvas com raio abaixo de 20 m, o `mc_p_alto` médio era 0,995 contra 31,7% de curvas realmente
+rotuladas como alto, e a concordância com `isl_class` caía de 56,1% para 31,9%.
 
 ## 4. A representação de sequência usa uma entrada diferente
 
@@ -125,8 +137,8 @@ eles é só o que se prevê.
 A representação de **sequência** (`cvt seq`) **não** usa essas features. Ela trabalha com a série
 no tempo dos sensores, ou seja, a aproximação inteira, não só as estatísticas resumidas:
 
-- **Sensores ao longo do tempo** (50 instantes): `vehicle_speed`, `accel_x`, `accel_y`,  `engine_rpm` + o canal **`distancia_restante`**, que é a distância que falta para a entrada da curva em cada instante (decresce até zero na entrada, normalizada para [0, 1]).
-- **Alguns números fixos por curva**, repetidos ao longo do tempo como canais constantes: `jerk_y_max`, as contagens de perigo, a geometria da curva à frente, as probabilidades de Monte Carlo, e o contexto (`mean_isl_antes`, `prev_isl_max`, `n_curvas_antes`).
+- **Sensores ao longo do tempo** (50 instantes): `vehicle_speed` e `engine_rpm` + o canal **`distancia_restante`**, que é a distância que falta para a entrada da curva em cada instante (decresce até zero na entrada, normalizada para [0, 1]).
+- **Alguns números fixos por curva**, repetidos ao longo do tempo como canais constantes: o raio na janela (`precurva_raio_min`, `_mean`, `_last`), o raio da curva à frente (`f4_raio_min`) e o contexto (`mean_isl_antes`, `prev_isl_max`, `n_curvas_antes`).
 - **A resposta da curva anterior** (`prev_<alvo>`): usa o valor do alvo na curva passada como pista.
 
 Para mudar os canais da sequência, edite `flags.seq.sensors` e `flags.seq.scalares_extras` no [features.yaml](../features.yaml).

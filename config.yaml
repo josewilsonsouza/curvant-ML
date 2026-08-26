@@ -63,12 +63,6 @@ risk_measures:
     limiar_ctp: 0.3            # m/s² - aceleração centrípeta mínima (ctp_accel = v²/R)
     min_mudancas: 3            # nº de alternâncias para caracterizar zigue-zague
 
-# Produz mc_p_baixo / mc_p_medio / mc_p_alto (probabilidade de cada classe de ISL).
-montecarlo:
-  n_sim: 1000
-  k_ultimos: 20      # últimos pontos da janela usados p/ a tendência de velocidade
-  sigma_min: 5       # desvio mínimo em km/h (incerteza do sensor)
-
 
 # ===================== Modelos =====================
 

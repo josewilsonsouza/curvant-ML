@@ -1,7 +1,6 @@
 import pandas as pd
 from curvant.driving.curve_detection import identificar_trechos_curvos
 from curvant.driving.features import extrair_features
-from curvant.models.montecarlo import aplicar_mc_features
 
 def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_risco: bool = True) -> pd.DataFrame:
     """
@@ -33,15 +32,5 @@ def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_risco: boo
         print(f"  {len(features_df)} amostras — Risco: {n_perigosa} | Segura: {n_segura}")
     else:
         print(f"  {len(features_df)} amostras (curvas)")
-
-    mc_cfg = cfg.get('montecarlo', {})
-    rnd    = cfg.get('ml', {}).get('random_state', 42)
-    features_df = aplicar_mc_features(
-        features_df, df_analysis,
-        n_sim=mc_cfg.get('n_sim', 1000),
-        k_ultimos=mc_cfg.get('k_ultimos', 10),
-        sigma_min=mc_cfg.get('sigma_min', 0.5),
-        random_state=rnd,
-    )
 
     return features_df

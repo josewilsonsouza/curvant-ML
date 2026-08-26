@@ -26,45 +26,44 @@ flags:
   # Representação TABULAR (`cvt tab <alvo>`): lista chapada de features agregadas por curva.
   # Compartilhada pelos três alvos tabulares (risk, isl, velocity), porque as features
   # pré-curva são as mesmas; o que muda entre eles é só o alvo.
+  #
   # Redundância removida em jul/2026: cinco estatísticas de nível da velocidade tinham
   # correlação acima de 0.95 entre si, e o mesmo valia para os dois pares de jerk e para as
   # duas medidas de bearing. Ficou um representante de cada grupo, escolhido pela correlação
-  # com os alvos. Verificado nos três alvos tabulares: a variação de desempenho ficou entre
-  # -0.006 e +0.008, dentro do ruído. As medidas de dispersão e tendência da velocidade (std,
-  # cv, slope) continuam, porque medem outra coisa e não estavam no grupo redundante.
+  # com os alvos.
+  #
+  # Acelerômetro fora da entrada (ago/2026): os critérios de risco já tinham deixado de usar
+  # esse sensor, mas ele continuava como feature. Como ANALISE_DADOS.md mostra que o aparelho
+  # registra vibração e não a dinâmica do veículo (correlação 0.055 com v²/R, 0.001 no eixo
+  # longitudinal contra dv/dt), tudo que dele deriva saiu da whitelist: as estatísticas de
+  # accel_x e accel_y, os jerks, as contagens de evento por limiar de aceleração e o pico de
+  # aceleração absoluta na janela.
+  #
+  # Segunda poda (ago/2026), quatro pares acima de 0.9 que a limpeza de julho não pegou.
+  # Ficou o membro mais correlacionado com isl_class e v_critica:
+  #   vehicle_speed_min x distance_car_curve (0.909)  -> saiu distance_car_curve. Com a janela
+  #     dinâmica, o comprimento dela é v²/(2a), então essa feature era a velocidade reescrita
+  #     (correlação 0.933 com vehicle_speed_min²).
+  #   vehicle_speed_std x vehicle_speed_cv (0.915)    -> ficou o cv (0.202 e 0.248 contra
+  #     0.109 e 0.111 do std).
+  #   f4_raio_min x f4_raio_mean (0.948)              -> ficou o mínimo, que é o raio que
+  #     restringe a velocidade.
+  #   prev_raio_min x prev_raio_mean (0.949)          -> ficou o mínimo, pela mesma razão.
+  # Junto saíram f4_dnit_num e prev_dnit_num: são o mesmo raio binado em faixas do DNIT
+  # (correlação 0.843 com f4_raio_min) e perdem para ele nos dois alvos.
+  #
+  # As mc_p_* saíram com a remoção do Monte Carlo, ver models/ e ANALISE_DADOS.md.
+  #
+  # As colunas continuam sendo produzidas por features.py, então voltar atrás com qualquer
+  # uma delas é só relistá-la aqui.
   tab:
     features:
-      # estatísticas da velocidade na janela pré-curva
+      # velocidade na janela pré-curva
       - vehicle_speed_min          # representa o grupo de nível (mean/median/max/mean_tarde)
-      - vehicle_speed_std
+      - vehicle_speed_cv           # representa o par de dispersão (std/cv)
       - vehicle_speed_slope
-      - vehicle_speed_cv
       - vehicle_speed_slope_tarde
-      # estatísticas da aceleração longitudinal
-      - accel_x_mean
-      - accel_x_std
-      - accel_x_median
-      - accel_x_max
-      - accel_x_min
-      - accel_x_slope
-      - accel_x_mean_tarde
-      - accel_x_slope_tarde
-      # estatísticas da aceleração lateral
-      - accel_y_mean
-      - accel_y_std
-      - accel_y_median
-      - accel_y_max
-      - accel_y_min
-      - accel_y_slope
-      - accel_y_mean_tarde
-      - accel_y_slope_tarde
-      # jerk (derivada da aceleração) e contagens de eventos na janela
-      - jerk_x_std                 # representa o par jerk_x (max/std)
-      - jerk_y_max                 # representa o par jerk_y (max/std)
-      - distance_car_curve
-      - n_perigo_accel_precurva
-      - precurva_abs_accel_max
-      - n_perigo_lateral_precurva
+      # oscilação de direção na janela
       - precurva_n_mudancas_dir
       - precurva_bearing_range     # representa o par bearing (std/range)
       # raio da trajetória na janela pré-curva
@@ -73,19 +72,11 @@ flags:
       - precurva_raio_last
       # geometria real da curva à frente
       - f4_raio_min
-      - f4_raio_mean
-      - f4_dnit_num
       # contexto das curvas anteriores
       - n_curvas_antes
       - prev_isl_max
       - mean_isl_antes
       - prev_raio_min
-      - prev_raio_mean
-      - prev_dnit_num
-      # probabilidades de classe de ISL (simulação de Monte Carlo)
-      - mc_p_baixo
-      - mc_p_medio
-      - mc_p_alto
 
   # Importância de features: é a análise do modelo tabular, então usa a mesma lista.
   importance:
@@ -95,25 +86,16 @@ flags:
   # achatam numa lista só:
   #   sensors         - canais de série temporal (n_timesteps por curva)
   #   scalares_extras - escalares fixos por curva, adicionados como canais constantes
+  # Mesmas podas da flag tab: acelerômetro, Monte Carlo e os pares redundantes de raio.
   seq:
     sensors:
       - vehicle_speed
-      - accel_x
-      - accel_y
       - engine_rpm
     scalares_extras:
       - precurva_raio_min
       - precurva_raio_mean
       - precurva_raio_last
-      - jerk_y_max
-      - n_perigo_accel_precurva
-      - n_perigo_lateral_precurva
       - f4_raio_min
-      - f4_raio_mean
-      - f4_dnit_num
-      - mc_p_baixo
-      - mc_p_medio
-      - mc_p_alto
       - mean_isl_antes
       - prev_isl_max
       - n_curvas_antes

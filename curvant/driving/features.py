@@ -282,8 +282,11 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
     """
     Targets de ISL e velocidade crítica.
     - ISL cinemático: v²/(R·g·μ) = ctp_accel/(g·μ) - depende do raio GPS (B-spline).
-    - ISL via sensor: |accel_y|/(g·μ) - não depende do raio, mais robusto a GPS ruidoso.
     - v_critica: velocidade real no ponto de pico do ISL (prever isto equivale a prever ISL).
+
+    Havia aqui um terceiro alvo, isl_sensor_*, que era |accel_y|/(g·μ). Saiu em ago/2026:
+    o acelerômetro é do celular da coleta e mede vibração, não a dinâmica do veículo
+    (ver ANALISE_DADOS.md). Nenhum subcomando o usava.
 
     A classe (isl_class) sai do p95 do ISL na curva, não do máximo. O máximo pega o pior
     ponto isolado, que num spline interpolador de GPS costuma ser um raio espúrio minúsculo
@@ -310,14 +313,6 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
         out['isl_mean'] = out['isl_max'] = out['isl_p95'] = np.nan
         out['isl_class'] = out['isl_alto'] = np.nan
         out['v_critica'] = np.nan
-
-    if 'accel_y' in pts_curva.columns:
-        isl_s = pts_curva['accel_y'].abs() / (_G * _MU_PADRAO)
-        out['isl_sensor_max']   = float(isl_s.max())
-        out['isl_sensor_mean']  = float(isl_s.mean())
-        out['isl_sensor_class'] = classificar_isl(float(isl_s.max()))
-    else:
-        out['isl_sensor_max'] = out['isl_sensor_mean'] = out['isl_sensor_class'] = np.nan
 
     return out
 

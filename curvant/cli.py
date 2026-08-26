@@ -107,7 +107,7 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
     dfs_curves = detect_curves.run(df, cfg)
 
     print("\n[3/5] Calculando aceleração centrípeta e absoluta...")
-    R_MIN = cfg.get('curve_detection', {}).get('raio_min', 5.0)
+    R_MIN = cfg.get('curve_detection', {}).get('raio_min', 20.0)
     raio_clipado = dfs_curves['raio_curvatura'].clip(lower=R_MIN)
     dfs_curves['ctp_accel'] = (dfs_curves['vehicle_speed'] / 3.6) ** 2 / raio_clipado
     dfs_curves['abs_accel'] = np.sqrt(dfs_curves['accel_x'] ** 2 + dfs_curves['accel_y'] ** 2)

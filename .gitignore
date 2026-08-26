@@ -10,3 +10,4 @@ plots-test.py
 results/
 .env
 .venv/
+tests/

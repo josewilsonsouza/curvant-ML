@@ -11,7 +11,7 @@ _DEFAULT_OUTPUT = 'data/eletro_rjdf_serra_clean.parquet'
 def clipar_acelerometro(df: pd.DataFrame, limite: float = 5.0) -> pd.DataFrame:
     """
     Clipa spikes do acelerômetro para ±limite m/s².
-    Valores > 5 m/s² (~0.5g) são fisicamente improváveis em condução normal.
+    Valores > 5 m/s^2 (~0.5g) são fisicamente improváveis em condução normal.
     """
     df = df.copy()
     for col in ['accel_x', 'accel_y', 'accel_z']:
