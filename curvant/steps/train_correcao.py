@@ -62,6 +62,8 @@ def otimizado(features_df, cfg: dict, plot: bool):
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
         target='correcao_tardia_curva',
+        f1_average='binary',       # mesma métrica de classicos, senão os dois não se comparam
+        labels=['Antecipou', 'Corrigiu'],
         n_trials_xgb=opt.get('n_trials_xgb', opt.get('n_trials', 50)),
         n_trials_rf=opt.get('n_trials_rf', opt.get('n_trials', 30)),
         n_trials_lr=opt.get('n_trials_lr', 20),

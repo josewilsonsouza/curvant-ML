@@ -1,0 +1,16 @@
+# Dependências do app Streamlit (app/main.py).
+# O Streamlit Cloud instala só o que está aqui, então o pyproject.toml não vale no deploy.
+# É um subconjunto do pyproject: o app roda detecção de curvas, rotulagem e extração de
+# features, mas não treina modelos, então sklearn, xgboost e optuna ficam de fora.
+
+streamlit>=1.40
+streamlit-folium>=0.24
+folium>=0.17
+altair>=5.4
+
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+pyarrow>=16.0
+pyyaml>=6.0
+pillow>=10.0
