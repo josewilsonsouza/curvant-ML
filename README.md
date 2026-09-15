@@ -92,7 +92,7 @@ Para cada segmento contíguo de `curva=True`, um critério de comportamento gera
 |---|---|
 | Correção tardia | a maior desaceleração dentro da curva passa do limiar |
 
-Frear antes da curva é condução prudente e não conta; frear já dentro dela indica que o motorista não antecipou o que vinha. Houve outros critérios, todos removidos, e o porquê de cada remoção está em [CORRECAO_TARDIA](docs/CORRECAO_TARDIA.md).
+Frear antes da curva é condução prudente e não conta; frear já dentro dela indica que o motorista não antecipou o que vinha. Os detalhes do critério estão em [CORRECAO_TARDIA](docs/CORRECAO_TARDIA.md).
 
 ### Validação
 

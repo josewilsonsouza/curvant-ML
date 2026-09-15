@@ -26,9 +26,9 @@ O rótulo resultante é estável: mexer no piso do raio ou somar à velocidade o
 
 ### Por que o ISL é regressão e não classificação
 
-As faixas baixo, médio e alto vêm de dois cortes fixos sobre uma grandeza contínua, e cerca de um quarto das curvas cai bem em cima de um dos cortes. Classificar direto trata um erro minúsculo na fronteira igual a um erro grosseiro, e o treino não recebe nenhuma informação sobre a distância até o limiar.
+As faixas baixo, médio e alto vêm de dois cortes fixos sobre uma grandeza contínua, e cerca de um quarto das curvas cai bem em cima de um dos cortes. Classificar direto trataria um erro minúsculo na fronteira igual a um erro grosseiro, e o treino não receberia nenhuma informação sobre a distância até o limiar.
 
-Regredir o `isl_p95` e cortar depois preserva essa informação. Medido, o acerto da faixa fica praticamente igual ao da classificação direta, então o ganho não é de acerto: é ter um erro contínuo interpretável em vez de só uma taxa de acerto de três caixas.
+Regredir o `isl_p95` e cortar depois preserva essa informação e entrega a faixa do mesmo jeito. O acerto da faixa fica praticamente igual ao de um classificador treinado direto nela, então o ganho não é de acerto: é ter um erro contínuo interpretável em vez de só uma taxa de acerto de três caixas.
 
 ### Colunas calculadas sem subcomando
 
@@ -38,7 +38,7 @@ Regredir o `isl_p95` e cortar depois preserva essa informação. Medido, o acert
 
 Todas saem da janela de aproximação ou da geometria da rota, que é conhecida de antemão. A lista completa e ativa está em [features.yaml](../features.yaml); esta seção explica o que cada grupo significa.
 
-**Velocidade na aproximação.** O nível com que o motorista chega (`vehicle_speed_min`), o quanto a velocidade oscilou (`vehicle_speed_cv`) e para onde ela estava indo (`vehicle_speed_slope`, e o mesmo só na metade final da janela em `vehicle_speed_slope_tarde`). O produtor calcula nove estatísticas por sensor; a whitelist leva um representante de cada grupo que não fosse redundante.
+**Velocidade na aproximação.** O nível com que o motorista chega (`vehicle_speed_min`), o quanto a velocidade oscilou (`vehicle_speed_cv`) e para onde ela estava indo (`vehicle_speed_slope`, e o mesmo só na metade final da janela em `vehicle_speed_slope_tarde`). O produtor calcula nove estatísticas por sensor, e a whitelist leva um representante de cada grupo correlacionado.
 
 **Oscilação de direção.** `precurva_bearing_range` mede o quanto o rumo variou na aproximação, e `precurva_n_mudancas_dir` conta quantas vezes o motorista trocou de lado.
 
@@ -48,7 +48,7 @@ Todas saem da janela de aproximação ou da geometria da rota, que é conhecida 
 
 **O que o motorista já enfrentou na rota.** `n_curvas_antes`, `prev_isl_max`, `mean_isl_antes` e `prev_raio_min`. Todas usam apenas curvas já percorridas.
 
-Nada vindo do acelerômetro entra em lugar nenhum. O sensor é do celular usado na coleta e mede vibração, não a dinâmica do carro; a medição está em [ANALISE_DADOS.md](ANALISE_DADOS.md).
+O acelerômetro não entra em nenhuma das listas. Ele é do celular usado na coleta, não da central do veículo, e o que registra é vibração da estrada e do motor. A medição está em [ANALISE_DADOS.md](ANALISE_DADOS.md).
 
 ## A sequência recebe outra entrada
 

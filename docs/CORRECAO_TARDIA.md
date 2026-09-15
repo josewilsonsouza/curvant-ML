@@ -16,22 +16,11 @@ A velocidade é o sensor confiável do conjunto. A aceleração longitudinal cal
 
 A velocidade do OBD chega em passos de 1 km/h, uma vez por segundo. Cada degrau desses vale cerca de 0,28 m/s² na conta, o que perto do limiar é grande o bastante para decidir o rótulo pelo arredondamento em vez do comportamento. Por isso `margem_histerese` marca como indefinidas as curvas que caem nessa faixa, e elas saem do treino.
 
-## Por que sobrou só este critério
+## Por que não comparar com a velocidade segura
 
-**Kamm e aceleração lateral saíram em julho de 2026.** Vinham do acelerômetro, que é do celular usado na coleta e não da central do veículo. A correlação entre a leitura lateral e a aceleração centrípeta calculada pela física é de 0,055, não há inversão de sinal entre curvas para lados opostos, e a melhor reorientação linear possível recupera 0,3% do sinal. Detalhe em [ANALISE_DADOS.md](ANALISE_DADOS.md).
+O critério mais natural seria comparar a velocidade de entrada com a velocidade segura da curva. Ele não é usado de propósito: uma regressão logística com a velocidade de aproximação e o raio reproduz esse rótulo quase perfeitamente, então prever uma reescrita das próprias features não mediria aprendizado nenhum. Essa dimensão fica com os alvos `isl_p95` e `v_critica`.
 
-**O zigue-zague e o rótulo combinado de risco saíram em agosto.** Aqui o motivo é outro e mais interessante. Medindo a taxa de cada critério dentro de cada faixa de ISL:
-
-| Critério | ISL baixo | ISL alto | correlação com `isl_p95` |
-|---|---|---|---|
-| correção tardia | 0,338 | 0,124 | -0,197 |
-| zigue-zague | 0,047 | 0,446 | +0,418 |
-
-Os dois apontam para lados opostos, e a correlação entre eles é de -0,092, com 7% de sobreposição nas curvas marcadas. O mecanismo é direto: frear dentro da curva reduz a velocidade, e o ISL é v²/R, então a frenagem derruba justamente a grandeza que o outro critério acompanha. O rótulo combinado era o OU dos dois, ou seja, misturava o erro que foi compensado com o que não foi. A F1 aparentemente boa que ele alcançava vinha da taxa de positivos mais alta, não de aprendizado melhor.
-
-Isso não é defeito de implementação. Qualquer critério de "corrigiu depois de entrar" vai ser anti-correlacionado com qualquer critério de "exigiu demais da aderência", então uma proposta futura de rótulo composto de risco encontra o mesmo problema.
-
-**A velocidade de entrada nunca entrou.** Comparar a velocidade de entrada com a velocidade segura da curva seria o critério mais natural, mas uma regressão logística com a velocidade de aproximação e o raio reproduz esse rótulo quase perfeitamente. Prever uma reescrita das próprias features não mede aprendizado nenhum. Essa dimensão fica com os alvos `isl_p95` e `v_critica`.
+Vale saber que este alvo e o de ISL medem coisas opostas, e isso não é acidente. Frear dentro da curva reduz a velocidade, e o ISL é v²/R, então corrigir derruba justamente a grandeza que o ISL acompanha. A taxa de correção tardia cai de 0,338 nas curvas de ISL baixo para 0,124 nas de ISL alto. Um alvo descreve o erro que foi compensado, o outro o que não foi, e juntá-los num rótulo só produz uma mistura sem significado.
 
 ## O que este alvo acrescenta
 

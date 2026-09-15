@@ -11,3 +11,4 @@ results/
 .env
 .venv/
 tests/
+ScriptsAgda/

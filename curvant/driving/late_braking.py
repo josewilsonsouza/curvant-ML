@@ -1,9 +1,7 @@
 """Correção tardia: o motorista freou forte depois de já estar dentro da curva.
 
-É o único critério de comportamento do projeto. Houve outros, todos removidos, e o
-motivo de cada remoção está em docs/CORRECAO_TARDIA.md. O resumo é que os critérios
-vindos do acelerômetro mediam vibração do celular, e o de zigue-zague media o oposto
-deste aqui: frear dentro da curva derruba o v²/R que aquele critério acompanhava.
+É o critério de comportamento do projeto, o único alvo que descreve mais o condutor do
+que a estrada. O raciocínio e os limiares estão em docs/CORRECAO_TARDIA.md.
 """
 import numpy as np
 import pandas as pd

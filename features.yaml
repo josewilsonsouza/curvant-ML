@@ -16,10 +16,9 @@ flags:
   # Representação TABULAR (`cvt tab <alvo>`): as features já resumidas por curva. Os três
   # alvos compartilham a lista, porque a aproximação é a mesma; o que muda é só o que se prevê.
   #
-  # A lista é curta de propósito. Tudo que vinha do acelerômetro saiu, porque o sensor é do
-  # celular usado na coleta e mede vibração. Das features restantes ficou um representante de
-  # cada grupo correlacionado, escolhido por desempenho nos alvos. O histórico está em
-  # docs/ANALISE_DADOS.md.
+  # A lista é curta de propósito: um representante de cada grupo de features correlacionadas,
+  # escolhido por desempenho nos alvos. O acelerômetro não entra, porque é do celular usado na
+  # coleta e registra vibração em vez da dinâmica do carro (docs/ANALISE_DADOS.md).
   tab:
     features:
       # velocidade na aproximação

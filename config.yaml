@@ -48,8 +48,8 @@ curve_detection:
     aberta:       500    # R <= 500 m
     # suave: R > 500 m
 
-# Correção tardia: o motorista freou forte depois de já estar dentro da curva. É o único
-# critério de comportamento que sobrou; o porquê das remoções está em docs/CORRECAO_TARDIA.md.
+# Correção tardia: o motorista freou forte depois de já estar dentro da curva. É o critério de
+# comportamento do projeto, detalhado em docs/CORRECAO_TARDIA.md.
 correcao_tardia:
   limiar_desaceleracao: 2.0    # m/s² - frenagem dentro da curva que caracteriza a correção.
                                # Marca ~24% das curvas; frear ANTES da curva não conta.
