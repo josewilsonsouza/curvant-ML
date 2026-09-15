@@ -78,11 +78,9 @@ def _executar_pipeline(data_path: str, cfg: dict, feat_cfg: dict):
     dfs_curves["ctp_accel"] = (dfs_curves["vehicle_speed"] / 3.6) ** 2 / raio_clip
 
     with contextlib.redirect_stdout(io.StringIO()):
-        df_analysis = label_driving.run(dfs_curves, cfg, mostrar_risco=False)
+        df_analysis = label_driving.run(dfs_curves, cfg, mostrar_correcao=False)
 
-    df_analysis[["manobra_frenagem", "manobra_ziguezague"]] = (
-        df_analysis[["manobra_frenagem", "manobra_ziguezague"]].astype(int)
-    )
+    df_analysis["correcao_tardia"] = df_analysis["correcao_tardia"].astype(int)
 
     with contextlib.redirect_stdout(io.StringIO()):
         df_at = identificar_trechos_curvos(df_analysis)
@@ -124,7 +122,7 @@ def bearing_wrap(b2: float, b1: float) -> float:
 
 def enriquecer_com_bearings(df: pd.DataFrame) -> pd.DataFrame:
     """Adiciona bearing e variação de bearing (wrap-corrected) ao DataFrame."""
-    from curvant.driving.risk_measures import calcular_bearing
+    from curvant.driving.features import calcular_bearing
     df = df.copy().reset_index(drop=True)
     lats, lons = df["lat"].tolist(), df["lon"].tolist()
     bearings = [np.nan] + [
@@ -140,8 +138,8 @@ def enriquecer_com_bearings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def cor_manobra(label: str) -> str:
-    return "#d73027" if label == "Perigosa" else "#2b8a3e"
+def cor_correcao(label: str) -> str:
+    return "#d73027" if label == "Corrigiu" else "#2b8a3e"
 
 
 # Dados
@@ -153,7 +151,7 @@ features_df["_local"] = features_df["id_route"].map(loc_map)
 # Sidebar - filtros
 
 st.sidebar.image(os.path.join(_ROOT, "figures", "curvantML.png"), width=180)
-st.sidebar.markdown("Visualizador de manobras em curvas")
+st.sidebar.markdown("Visualizador de correção tardia em curvas")
 if st.sidebar.button("Reprocessar dados", use_container_width=True):
     carregar_pipeline.clear()
     features_df, df_at, cfg, feat_cfg = carregar_pipeline(rebuild=True)
@@ -170,33 +168,19 @@ st.sidebar.divider()
 
 classe_filter = st.sidebar.radio(
     "Filtrar por classe",
-    ["Todas", "Segura", "Perigosa"],
+    ["Todas", "Antecipou", "Corrigiu"],
     horizontal=True,
 )
-if classe_filter == "Segura":
-    subset = features_df[features_df["manobra"] == 0]
-elif classe_filter == "Perigosa":
-    subset = features_df[features_df["manobra"] == 1]
+if classe_filter == "Antecipou":
+    subset = features_df[features_df["correcao_tardia_curva"] == 0]
+elif classe_filter == "Corrigiu":
+    subset = features_df[features_df["correcao_tardia_curva"] == 1]
 else:
     subset = features_df
 
-_CRITERIOS_MAPA = {
-    "Frenagem tardia": "manobra_frenagem_curva",
-    "Zigue-zague": "manobra_ziguezague_curva",
-}
-criterios_sel = st.sidebar.multiselect(
-    "Filtrar por critério de risco",
-    options=list(_CRITERIOS_MAPA.keys()),
-    placeholder="Todos os critérios",
-)
-if criterios_sel:
-    cols_sel = [_CRITERIOS_MAPA[c] for c in criterios_sel]
-    mask = subset[[c for c in cols_sel if c in subset.columns]].any(axis=1)
-    subset = subset[mask]
-
-n_per = int((subset["manobra"] == 1).sum())
-n_seg = int((subset["manobra"] == 0).sum())
-st.sidebar.markdown(f"**{n_per + n_seg}** curvas — 🔴 {n_per} Perigosa · 🟢 {n_seg} Segura")
+n_per = int((subset["correcao_tardia_curva"] == 1).sum())
+n_seg = int((subset["correcao_tardia_curva"] == 0).sum())
+st.sidebar.markdown(f"**{n_per + n_seg}** curvas, 🔴 {n_per} Corrigiu · 🟢 {n_seg} Antecipou")
 st.sidebar.divider()
 
 locais_disp = sorted(subset["_local"].unique())
@@ -212,7 +196,7 @@ if visao == "Curva selecionada":
 
     def fmt_curva(tc):
         row = sub_rota[sub_rota["id_trecho_curvo"] == tc].iloc[0]
-        label = "🔴" if row["manobra"] == 1 else "🟢"
+        label = "🔴" if row["correcao_tardia_curva"] == 1 else "🟢"
         return f"{label} Curva {tc}"
 
     curva_sel = st.sidebar.selectbox("Curva", curvas_disp, format_func=fmt_curva)
@@ -225,7 +209,7 @@ else:
 # Dados da curva selecionada
 
 feat_row = sub_rota[sub_rota["id_trecho_curvo"] == curva_sel].iloc[0]
-manobra_label = "Perigosa" if feat_row["manobra"] == 1 else "Segura"
+correcao_label = "Corrigiu" if feat_row["correcao_tardia_curva"] == 1 else "Antecipou"
 
 curva_pts_raw = df_at[
     (df_at["id_route"] == rota_sel) & (df_at["trecho_curvo"] == curva_sel)
@@ -250,11 +234,11 @@ todos = enriquecer_com_bearings(todos)
 # Curva selecionada
 
 if visao == "Curva selecionada":
-    cor = cor_manobra(manobra_label)
+    cor = cor_correcao(correcao_label)
     st.markdown(
         f"<h2>Curva <b>#{curva_sel}</b> &nbsp;&nbsp;"
         f"<span style='background:{cor};color:white;padding:4px 14px;"
-        f"border-radius:6px;font-size:1rem'>{manobra_label}</span></h2>",
+        f"border-radius:6px;font-size:1rem'>{correcao_label}</span></h2>",
         unsafe_allow_html=True,
     )
     st.caption(f"Trajeto: `{rota_sel}`")
@@ -275,29 +259,19 @@ if visao == "Curva selecionada":
     c4.metric("Var. vel. acumulada", f"{var_vel:.1f} km/h",
               help="Soma de |Δv| ponto a ponto.")
     c5.metric("Accel. centrípeta máx", f"{ctp_max:.2f} m/s²",
-              help="v²/R — força que empurra para fora da curva.")
+              help="v²/R, força que empurra para fora da curva.")
     c6.metric("Raio med. / DNIT", f"{raio_med:.0f}m / {dnit}")
     c7.metric("Duração da curva", f"{dur_curva:.0f}s")
 
-    st.markdown("**Critérios ativos durante a curva:**")
-    _rm = cfg["risk_measures"]
-    _criterios = [
-        (
-            "manobra_frenagem_curva", "Frenagem tardia",
-            f"Desaceleração > {_rm['limiar_desaceleracao']} m/s² já dentro da curva, "
-            f"medida pela variação da velocidade. Indica que o motorista não antecipou a curva.",
-        ),
-        (
-            "manobra_ziguezague_curva", "Zigue-zague",
-            f"≥ {_rm['zigue_zague']['min_mudancas']} alternâncias de direção com "
-            f"|Δθ| > {_rm['zigue_zague']['limiar_bearing']}° "
-            f"e ctp_accel > {_rm['zigue_zague']['limiar_ctp']} m/s².",
-        ),
-    ]
-    ca, cb = st.columns(2)
-    for col, (flag_col, nome, descricao) in zip([ca, cb], _criterios):
-        ativo = bool(feat_row[flag_col])
-        col.metric(label=nome, value="🔴 Ativo" if ativo else "⚪ Inativo", help=descricao)
+    _ct = cfg["correcao_tardia"]
+    ativo = bool(feat_row["correcao_tardia_curva"])
+    st.metric(
+        label="Correção tardia",
+        value="🔴 Ativa" if ativo else "⚪ Inativa",
+        help=(f"Desaceleração > {_ct['limiar_desaceleracao']} m/s² já dentro da curva, "
+              f"medida pela variação da velocidade. Indica que o motorista não antecipou "
+              f"a curva e teve que corrigir."),
+    )
 
     st.divider()
     st.subheader("Mapa do trecho")
@@ -345,20 +319,17 @@ if visao == "Curva selecionada":
         ).add_to(m)
 
     for _, row in curva_pts.iterrows():
-        c_pt = "#d73027" if row.get("conducao") == "Perigosa" else "#2b8a3e"
-        criterios_pt = []
-        if row.get("aceleracao_anormal", 0):
-            criterios_pt.append("Accel")
-        if row.get("zigue_zague", 0):
-            criterios_pt.append("ZZ")
+        corrigiu_pt = bool(row.get("correcao_tardia", 0))
+        c_pt = "#d73027" if corrigiu_pt else "#2b8a3e"
+        criterios_pt = ["Correção tardia"] if corrigiu_pt else []
         tip = (
-            f"<b>{row.get('conducao','?')}</b><br>"
+            f"<b>{'Corrigiu' if corrigiu_pt else 'Antecipou'}</b><br>"
             f"t={row['time_sec']:.0f}s | Vel: {row['vehicle_speed']:.1f} km/h<br>"
             f"Accel.lat: {row['accel_y']:.2f} m/s²<br>"
             f"DNIT: {row.get('classe_dnit','?')}"
         )
         if criterios_pt:
-            tip += f"<br>Critérios: {', '.join(criterios_pt)}"
+            tip += f"<br>Critério: {', '.join(criterios_pt)}"
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
             radius=7, color=c_pt, fill=True,
@@ -368,7 +339,7 @@ if visao == "Curva selecionada":
 
     folium.Marker(
         location=[curva_pts.iloc[0]["lat"], curva_pts.iloc[0]["lon"]],
-        icon=folium.Icon(color="red" if manobra_label == "Perigosa" else "green",
+        icon=folium.Icon(color="red" if correcao_label == "Corrigiu" else "green",
                          icon="flag", prefix="fa"),
         tooltip="Início da curva",
     ).add_to(m)
@@ -379,8 +350,8 @@ if visao == "Curva selecionada":
                 font-size:12px;border:1px solid #ccc;line-height:1.6">
       <b>Legenda</b><br>
       <span style="color:#2166ac">&#9644;</span> Pré-curva (features)<br>
-      <span style="color:#d73027">●</span> Perigosa &nbsp;
-      <span style="color:#2b8a3e">●</span> Segura
+      <span style="color:#d73027">●</span> Corrigiu &nbsp;
+      <span style="color:#2b8a3e">●</span> Antecipou
     </div>"""
     m.get_root().html.add_child(folium.Element(legend_html))
     st_folium(m, width="100%", height=500, returned_objects=[])
@@ -416,26 +387,14 @@ if visao == "Curva selecionada":
                             labelFontSize=10)),
                 color=COLOR_ENC,
                 tooltip=["t_rel:Q", f"{campo}:Q", "segmento:N",
-                         "vehicle_speed:Q", "conducao:N"],
+                         "vehicle_speed:Q", "correcao_tardia:N"],
             )
             return (base + rule + rule_lbl).properties(height=height, title=titulo)
 
         ch_speed = linha("vehicle_speed", "Velocidade", "km/h")
         ch_accy = linha("accel_y", "Accel. lateral", "m/s²")
-        lim_ctp = cfg["risk_measures"]["zigue_zague"]["limiar_ctp"]
-        ch_ctp = (
-            linha("ctp_accel", "Accel. centrípeta v²/R", "m/s²")
-            + alt.Chart(pd.DataFrame({"y": [lim_ctp]}))
-            .mark_rule(color="#e6550d", strokeDash=[4, 3], strokeWidth=1.5)
-            .encode(y=alt.Y("y:Q"))
-        ).properties(height=160, title="Accel. centrípeta v²/R — gate zigue-zague")
-        lim_bear = cfg["risk_measures"]["zigue_zague"]["limiar_bearing"]
-        ch_bear = (
-            linha("delta_bearing", "Variação de bearing |Δθ|", "°")
-            + alt.Chart(pd.DataFrame({"y": [lim_bear]}))
-            .mark_rule(color="#e6550d", strokeDash=[4, 3], strokeWidth=1.5)
-            .encode(y=alt.Y("y:Q"))
-        ).properties(height=160, title="Variação de bearing |Δθ| — critério zigue-zague")
+        ch_ctp = linha("ctp_accel", "Accel. centrípeta v²/R", "m/s²").properties(height=160)
+        ch_bear = linha("delta_bearing", "Variação de bearing |Δθ|", "°").properties(height=160)
 
         g_esq, g_dir = st.columns(2, gap="medium")
         with g_esq:
@@ -448,51 +407,27 @@ if visao == "Curva selecionada":
     st.divider()
     st.subheader("Distribuição de classes neste trajeto")
     rota_feat = features_df[features_df["id_route"] == rota_sel].copy()
-    rota_feat["Classe"] = rota_feat["manobra"].map({0: "Segura", 1: "Perigosa"})
-    rota_feat["Critério"] = rota_feat.apply(
-        lambda r: ("Frenagem" if r["manobra_frenagem_curva"] else "")
-        + ("+" if r["manobra_frenagem_curva"] and r["manobra_ziguezague_curva"] else "")
-        + ("ZZ" if r["manobra_ziguezague_curva"] else "")
-        or "Nenhum",
-        axis=1,
+    rota_feat["Classe"] = rota_feat["correcao_tardia_curva"].map({0: "Antecipou", 1: "Corrigiu"})
+    dist_df = rota_feat["Classe"].value_counts().reset_index()
+    dist_df.columns = ["Classe", "Contagem"]
+    st.altair_chart(
+        alt.Chart(dist_df)
+        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
+        .encode(
+            x=alt.X("Classe:N", axis=alt.Axis(labelAngle=0)),
+            y=alt.Y("Contagem:Q"),
+            color=alt.Color("Classe:N",
+                scale=alt.Scale(domain=["Antecipou", "Corrigiu"],
+                                range=["#2b8a3e", "#d73027"]), legend=None),
+            tooltip=["Classe:N", "Contagem:Q"],
+        ).properties(title=f"Curvas em {rota_sel}", height=180),
+        width="stretch",
     )
-    col_dist, col_crit = st.columns(2)
-    with col_dist:
-        dist_df = rota_feat["Classe"].value_counts().reset_index()
-        dist_df.columns = ["Classe", "Contagem"]
-        st.altair_chart(
-            alt.Chart(dist_df)
-            .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-            .encode(
-                x=alt.X("Classe:N", axis=alt.Axis(labelAngle=0)),
-                y=alt.Y("Contagem:Q"),
-                color=alt.Color("Classe:N",
-                    scale=alt.Scale(domain=["Segura", "Perigosa"],
-                                    range=["#2b8a3e", "#d73027"]), legend=None),
-                tooltip=["Classe:N", "Contagem:Q"],
-            ).properties(title=f"Curvas em {rota_sel}", height=180),
-            width="stretch",
-        )
-    with col_crit:
-        crit_df = rota_feat[rota_feat["Classe"] == "Perigosa"]["Critério"].value_counts().reset_index()
-        crit_df.columns = ["Critério", "Contagem"]
-        if not crit_df.empty:
-            st.altair_chart(
-                alt.Chart(crit_df)
-                .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4, color="#d73027")
-                .encode(
-                    x=alt.X("Critério:N", axis=alt.Axis(labelAngle=0)),
-                    y=alt.Y("Contagem:Q"),
-                    tooltip=["Critério:N", "Contagem:Q"],
-                ).properties(title="Critérios das manobras Perigosa", height=180),
-                width="stretch",
-            )
 
     with st.expander("Dados brutos da curva selecionada"):
         cols_show = [
             "time_sec", "vehicle_speed", "engine_rpm",
-            "accel_x", "accel_y", "ctp_accel",
-            "conducao", "aceleracao_anormal", "zigue_zague",
+            "accel_x", "accel_y", "ctp_accel", "correcao_tardia",
             "raio_curvatura", "classe_dnit", "bearing", "delta_bearing",
         ]
         cols_ok = [c for c in cols_show if c in curva_pts.columns]
@@ -507,15 +442,15 @@ else:  # Visão geral do local
     st.markdown(f"<h2>Local de coleta: <b>{local_sel}</b></h2>", unsafe_allow_html=True)
 
     local_feat = subset[subset["_local"] == local_sel].copy()
-    local_feat["Classe"] = local_feat["manobra"].map({0: "Segura", 1: "Perigosa"})
+    local_feat["Classe"] = local_feat["correcao_tardia_curva"].map({0: "Antecipou", 1: "Corrigiu"})
 
     n_tot = len(local_feat)
-    n_per_loc = int(local_feat["manobra"].sum())
+    n_per_loc = int(local_feat["correcao_tardia_curva"].sum())
     n_seg_loc = n_tot - n_per_loc
     v1, v2, v3 = st.columns(3)
     v1.metric("Total de curvas", n_tot)
-    v2.metric("🔴 Perigosa", n_per_loc)
-    v3.metric("🟢 Segura", n_seg_loc)
+    v2.metric("🔴 Corrigiu", n_per_loc)
+    v3.metric("🟢 Antecipou", n_seg_loc)
 
     st.subheader("Mapa de todas as curvas do local")
     st.warning("🚔Cada círculo representa uma curva completa (ponto de entrada). Selecione uma curva na opção **Curva selecionada** para ver todos os pontos do trecho.")
@@ -531,7 +466,7 @@ else:  # Visão geral do local
         entry_rows.append({
             "lat": first["lat"], "lon": first["lon"],
             "tc": tc, "route": route_id,
-            "manobra": int(fr["manobra"]),
+            "correcao_tardia_curva": int(fr["correcao_tardia_curva"]),
             "vel_media": grp["vehicle_speed"].mean(),
             "raio_med": grp["raio_curvatura"].median(),
             "dnit": grp["classe_dnit"].mode()[0] if "classe_dnit" in grp.columns else "?",
@@ -555,17 +490,17 @@ else:  # Visão geral do local
                 ).add_to(m2)
 
         for er in entry_rows:
-            c_er = "#d73027" if er["manobra"] == 1 else "#2b8a3e"
-            label_er = "Perigosa" if er["manobra"] == 1 else "Segura"
+            c_er = "#d73027" if er["correcao_tardia_curva"] == 1 else "#2b8a3e"
+            label_er = "Corrigiu" if er["correcao_tardia_curva"] == 1 else "Antecipou"
             folium.CircleMarker(
                 location=[er["lat"], er["lon"]],
                 radius=8, color=c_er, fill=True,
                 fill_color=c_er, fill_opacity=0.85,
                 tooltip=folium.Tooltip(
-                    f"<b>{label_er}</b> — Curva {er['tc']}<br>"
+                    f"<b>{label_er}</b>, Curva {er['tc']}<br>"
                     f"Trajeto: {er['route']}<br>"
                     f"Vel. média: {er['vel_media']:.0f} km/h<br>"
-                    f"Raio med.: {er['raio_med']:.0f} m — DNIT: {er['dnit']}"
+                    f"Raio med.: {er['raio_med']:.0f} m, DNIT: {er['dnit']}"
                 ),
             ).add_to(m2)
 
@@ -575,8 +510,8 @@ else:  # Visão geral do local
                     background:white;padding:8px 12px;border-radius:8px;
                     font-size:12px;border:1px solid #ccc;line-height:1.6">
           <b>Legenda</b><br>
-          <span style="color:#d73027">●</span> Perigosa &nbsp;
-          <span style="color:#2b8a3e">●</span> Segura<br>
+          <span style="color:#d73027">●</span> Corrigiu &nbsp;
+          <span style="color:#2b8a3e">●</span> Antecipou<br>
           <span style="color:#aaaaaa">&#9644;</span> Trajeto
         </div>"""
         m2.get_root().html.add_child(folium.Element(legend2))
@@ -586,7 +521,6 @@ else:  # Visão geral do local
 
     st.subheader("Tabela de curvas")
     tbl = local_feat[["id_route", "id_trecho_curvo", "Classe",
-                       "manobra_frenagem_curva",
-                       "manobra_ziguezague_curva"]].copy()
-    tbl.columns = ["Trajeto", "Curva", "Classe", "Frenagem tardia", "Zigue-zague"]
+                       "correcao_tardia_curva"]].copy()
+    tbl.columns = ["Trajeto", "Curva", "Classe", "Correção tardia"]
     st.dataframe(tbl.reset_index(drop=True), width="stretch", height=300)

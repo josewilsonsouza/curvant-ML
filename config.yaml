@@ -30,7 +30,7 @@ curve_detection:
                      # Mantido em 0: a suavizadora foi testada e reprovada por reescrever
                      # ~20% dos rótulos de curva.
   limite_raio: 150   # m - raio máximo para marcar curva=True
-  raio_min: 20.0     # m - clip do raio para ctp_accel (usado no zigue-zague). Era 5.0, o que
+  raio_min: 20.0     # m - clip do raio para ctp_accel. Era 5.0, o que
                      # deixava passar geometria impossível: 12.6% dos pontos em curva tinham
                      # raio abaixo de 5 m (ruído de GPS) e 9.2% davam aceleração centrípeta
                      # acima do limite de aderência. Alinhado agora com raio_min_isl.
@@ -48,26 +48,21 @@ curve_detection:
     aberta:       500    # R <= 500 m
     # suave: R > 500 m
 
-# Critérios de conduta de risco. Os antigos (Kamm e aceleração lateral) saíram em jul/2026:
-# vinham do acelerômetro, que é do celular da coleta e não acompanha a dinâmica do veículo
-# (correlação 0.055 com v²/R). Detalhe em docs/ANALISE_DADOS.md. O que ficou mede correção
-# do motorista já dentro da curva, usando só velocidade e GPS.
-risk_measures:
-  limiar_desaceleracao: 2.0    # m/s² - frenagem dentro da curva que caracteriza correção tardia.
-                               # Marca ~26% das curvas; frear ANTES da curva não conta.
-  margem_histerese: 0.10       # faixa morta de +-10% ao redor do limiar de desaceleração:
-                               # valor dentro dela marca a curva como indefinida (rótulo decidido
-                               # por ruído de medida) e ela sai do treino do risco. 0 desliga.
-  zigue_zague:
-    limiar_bearing: 15         # graus - mudança mínima de direção
-    limiar_ctp: 0.3            # m/s² - aceleração centrípeta mínima (ctp_accel = v²/R)
-    min_mudancas: 3            # nº de alternâncias para caracterizar zigue-zague
+# Correção tardia: o motorista freou forte depois de já estar dentro da curva. É o único
+# critério de comportamento que sobrou; o porquê das remoções está em docs/CORRECAO_TARDIA.md.
+correcao_tardia:
+  limiar_desaceleracao: 2.0    # m/s² - frenagem dentro da curva que caracteriza a correção.
+                               # Marca ~24% das curvas; frear ANTES da curva não conta.
+  margem_histerese: 0.10       # faixa morta de +-10% ao redor do limiar: valor dentro dela marca
+                               # a curva como indefinida (rótulo decidido pelo ruído da medida,
+                               # já que a velocidade do OBD é quantizada em passos de 1 km/h) e
+                               # ela sai do treino. 0 desliga.
 
 
 # ===================== Modelos =====================
 
-# Parâmetros compartilhados pelos modelos tabulares (cvt tab risk|isl|velocity).
-# Também usado pelas análises complementares de train_risk (fora da CLI).
+# Parâmetros compartilhados pelos modelos tabulares (cvt tab velocity|isl|correcao).
+# Também usado pelas análises complementares de train_correcao (fora da CLI).
 ml:
   random_state: 42
   test_size: 0.3
@@ -75,20 +70,20 @@ ml:
   pca_n_components: null       # null = sem PCA | int = nº de componentes | float 0–1 = variância mantida
 
 # Ajuste de hiperparâmetros (XGBoost + RandomForest + LogReg).
-# Usado pela análise complementar train_risk.otimizado (fora da CLI).
+# Usado pela análise complementar train_correcao.otimizado (fora da CLI).
 optuna:
   n_trials_xgb: 50
   n_trials_rf: 30
   n_trials_lr: 20
   timeout: 300        # s máximos por otimização
 
-# Modelos sobre a série temporal bruta pré-curva (cvt seq risk|isl|velocity).
+# Modelos sobre a série temporal bruta pré-curva (cvt seq velocity|isl|correcao).
 
 temporais:
   model: [lstm, gru]                #opções: gru | lstm | cnn1d | mlp | linear | rf | xgboost
   task: auto                   # auto (detecta pelo target) | regression | classification
 
-  # O ALVO não fica aqui: vem do subcomando (`cvt seq risk|isl|velocity`). Assim não dá para
+  # O ALVO não fica aqui: vem do subcomando (`cvt seq velocity|isl|correcao`). Assim não dá para
   # esquecer de trocar o YAML e rodar o alvo errado sem perceber.
 
   # Multitarefa (só com o alvo `velocity`): além da velocidade, uma cabeça de classe prevê

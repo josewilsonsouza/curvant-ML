@@ -1,92 +1,55 @@
-# Ao criar uma feature nova em curvant/driving/features.py, adicione-a à flag
+# Extração das features da janela de aproximação, mais a whitelist que decide o que cada
+# representação enxerga. Criou uma feature nova em curvant/driving/features.py? Ela só entra
+# no modelo depois de listada aqui.
 
-# Extração de features por curva, a partir da janela pré-curva. A janela termina em (entrada_da_curva - lead_gap) e começa precurva_distancia metros antes.
-# Modo dinâmico (precurva_distancia: null): d = v² / (2 × precurva_desacel_confort), com clip
-# entre precurva_distancia_min e precurva_distancia_max.
 extracao:
-  precurva_distancia: null         # m fixos antes da curva; null -> d = v² / (2 × precurva_desacel_confort)
-  precurva_desacel_confort: 2.5       # m/s² - desaceleração de conforto p/ a janela dinâmica
-  precurva_distancia_min: 20       # m - tamanho mínimo da janela dinâmica
-  precurva_distancia_max: 400      # m - tamanho máximo da janela dinâmica
-  lead_gap: 30                   # m - folga antes da entrada (predição antecipada); 0 = sem folga
-  vars_sensor:                   # sensores cujas estatísticas viram features na janela pré-curva
+  precurva_distancia: null       # m fixos antes da curva; null = usa a distância de frenagem confortável
+  precurva_desacel_confort: 2.5  # m/s² - desaceleração de conforto da janela dinâmica
+  precurva_distancia_min: 20     # m - tamanho mínimo da janela
+  precurva_distancia_max: 400    # m - tamanho máximo da janela
+  lead_gap: 30                   # m - folga antes da entrada, o que torna a predição antecipada
+  vars_sensor:                   # sensores que viram estatísticas na janela
     - vehicle_speed
-    - accel_x
-    - accel_y
-    - engine_rpm
-  # accelerator_pedal_pos_d fica de fora, aqui e nas duas flags abaixo. Ele existe em 100% de
-  # rjdf/rjmgba/janeiro/serra e em 0% do eletronuclear (12% dos dados). Preencher o que falta
-  # com zero seria mentir: "pedal em 0%" não é pedal solto, é dado ausente, e marcaria todas as
-  # curvas do eletronuclear com uma assinatura que o modelo aprende a reconhecer (o dataset, não
-  # a condução). Vale também para throttle_off_distance, que deriva dele e cujo NaN vira 0.0,
-  # valor que significa "entrou acelerando". Mesma política do accel_z e do throttle.
 
 flags:
 
-  # Representação TABULAR (`cvt tab <alvo>`): lista chapada de features agregadas por curva.
-  # Compartilhada pelos três alvos tabulares (risk, isl, velocity), porque as features
-  # pré-curva são as mesmas; o que muda entre eles é só o alvo.
+  # Representação TABULAR (`cvt tab <alvo>`): as features já resumidas por curva. Os três
+  # alvos compartilham a lista, porque a aproximação é a mesma; o que muda é só o que se prevê.
   #
-  # Redundância removida em jul/2026: cinco estatísticas de nível da velocidade tinham
-  # correlação acima de 0.95 entre si, e o mesmo valia para os dois pares de jerk e para as
-  # duas medidas de bearing. Ficou um representante de cada grupo, escolhido pela correlação
-  # com os alvos.
-  #
-  # Acelerômetro fora da entrada (ago/2026): os critérios de risco já tinham deixado de usar
-  # esse sensor, mas ele continuava como feature. Como ANALISE_DADOS.md mostra que o aparelho
-  # registra vibração e não a dinâmica do veículo (correlação 0.055 com v²/R, 0.001 no eixo
-  # longitudinal contra dv/dt), tudo que dele deriva saiu da whitelist: as estatísticas de
-  # accel_x e accel_y, os jerks, as contagens de evento por limiar de aceleração e o pico de
-  # aceleração absoluta na janela.
-  #
-  # Segunda poda (ago/2026), quatro pares acima de 0.9 que a limpeza de julho não pegou.
-  # Ficou o membro mais correlacionado com isl_class e v_critica:
-  #   vehicle_speed_min x distance_car_curve (0.909)  -> saiu distance_car_curve. Com a janela
-  #     dinâmica, o comprimento dela é v²/(2a), então essa feature era a velocidade reescrita
-  #     (correlação 0.933 com vehicle_speed_min²).
-  #   vehicle_speed_std x vehicle_speed_cv (0.915)    -> ficou o cv (0.202 e 0.248 contra
-  #     0.109 e 0.111 do std).
-  #   f4_raio_min x f4_raio_mean (0.948)              -> ficou o mínimo, que é o raio que
-  #     restringe a velocidade.
-  #   prev_raio_min x prev_raio_mean (0.949)          -> ficou o mínimo, pela mesma razão.
-  # Junto saíram f4_dnit_num e prev_dnit_num: são o mesmo raio binado em faixas do DNIT
-  # (correlação 0.843 com f4_raio_min) e perdem para ele nos dois alvos.
-  #
-  # As mc_p_* saíram com a remoção do Monte Carlo, ver models/ e ANALISE_DADOS.md.
-  #
-  # As colunas continuam sendo produzidas por features.py, então voltar atrás com qualquer
-  # uma delas é só relistá-la aqui.
+  # A lista é curta de propósito. Tudo que vinha do acelerômetro saiu, porque o sensor é do
+  # celular usado na coleta e mede vibração. Das features restantes ficou um representante de
+  # cada grupo correlacionado, escolhido por desempenho nos alvos. O histórico está em
+  # docs/ANALISE_DADOS.md.
   tab:
     features:
-      # velocidade na janela pré-curva
-      - vehicle_speed_min          # representa o grupo de nível (mean/median/max/mean_tarde)
-      - vehicle_speed_cv           # representa o par de dispersão (std/cv)
+      # velocidade na aproximação
+      - vehicle_speed_min
+      - vehicle_speed_cv
       - vehicle_speed_slope
       - vehicle_speed_slope_tarde
-      # oscilação de direção na janela
+      # oscilação de direção na aproximação
       - precurva_n_mudancas_dir
-      - precurva_bearing_range     # representa o par bearing (std/range)
-      # raio da trajetória na janela pré-curva
+      - precurva_bearing_range
+      # o quanto o trecho antes da curva já era sinuoso
       - precurva_raio_min
       - precurva_raio_mean
       - precurva_raio_last
-      # geometria real da curva à frente
-      - f4_raio_min
-      # contexto das curvas anteriores
+      # geometria da curva que vem pela frente
+      - curva_raio_min
+      - curva_raio_mean
+      # o que o motorista já enfrentou nesta rota
       - n_curvas_antes
       - prev_isl_max
       - mean_isl_antes
       - prev_raio_min
 
-  # Importância de features: é a análise do modelo tabular, então usa a mesma lista.
+  # Importância de features analisa o modelo tabular, então usa a mesma lista.
   importance:
     herda: tab
 
-  # Representação de SEQUÊNCIA (`cvt seq <alvo>`). Duas entradas distintas, por isso não
-  # achatam numa lista só:
-  #   sensors         - canais de série temporal (n_timesteps por curva)
-  #   scalares_extras - escalares fixos por curva, adicionados como canais constantes
-  # Mesmas podas da flag tab: acelerômetro, Monte Carlo e os pares redundantes de raio.
+  # Representação de SEQUÊNCIA (`cvt seq <alvo>`). São duas entradas diferentes, por isso não
+  # viram uma lista só: `sensors` são canais que variam no tempo, `scalares_extras` são números
+  # fixos da curva, repetidos em todos os instantes. Deixar `scalares_extras` vazio é válido.
   seq:
     sensors:
       - vehicle_speed
@@ -95,7 +58,8 @@ flags:
       - precurva_raio_min
       - precurva_raio_mean
       - precurva_raio_last
-      - f4_raio_min
+      - curva_raio_min
+      - curva_raio_mean
       - mean_isl_antes
       - prev_isl_max
       - n_curvas_antes

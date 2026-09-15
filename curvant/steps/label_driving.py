@@ -1,34 +1,27 @@
 import pandas as pd
-from curvant.driving.risk_measures import caracterizar_conducao
+from curvant.driving.late_braking import rotular_correcao_tardia
 
-def run(dfs_curves: pd.DataFrame, cfg: dict, mostrar_risco: bool = True) -> pd.DataFrame:
-    """Classifica cada janela de curva com a taxonomia explícita de risco."""
-    da = cfg['risk_measures']
+def run(dfs_curves: pd.DataFrame, cfg: dict, mostrar_correcao: bool = True) -> pd.DataFrame:
+    """Rotula cada segmento de curva com o critério de correção tardia."""
+    da = cfg.get('correcao_tardia', {})
 
     partes = []
     for _, dt in dfs_curves.groupby('id_route', sort=False):
-        resultado = caracterizar_conducao(
+        resultado = rotular_correcao_tardia(
             dt,
             limiar_desaceleracao=da.get('limiar_desaceleracao', 2.0),
             margem_histerese=da.get('margem_histerese', 0.0),
-            zz_limiar_bearing=da.get('zigue_zague', {}).get('limiar_bearing', 15.0),
-            zz_limiar_ctp=da.get('zigue_zague', {}).get('limiar_ctp', 0.3),
-            zz_min_mudancas=da.get('zigue_zague', {}).get('min_mudancas', 3),
         )
         if not resultado.empty:
             partes.append(resultado)
 
     df_analysis = pd.concat(partes, ignore_index=True)
 
-    if mostrar_risco:
-        n_perigosa = df_analysis['manobra_combinado'].sum()
-        n_segura   = (~df_analysis['manobra_combinado']).sum()
-        n_frenagem = df_analysis['manobra_frenagem'].sum()
-        n_zz       = df_analysis['manobra_ziguezague'].sum()
-        print(f"  Janelas — Risco: {n_perigosa} | Segura: {n_segura}")
-        print(f"  Critérios — Frenagem tardia: {n_frenagem} | Zigue-zague: {n_zz}")
-        n_indef = df_analysis['manobra_indefinido'].sum()
+    if mostrar_correcao:
+        n_pos = int(df_analysis['correcao_tardia'].sum())
+        print(f"  Pontos em curva com correção tardia: {n_pos}")
+        n_indef = int(df_analysis['correcao_indefinida'].sum())
         if n_indef:
-            print(f"  Indefinidas (histerese): {n_indef} janelas na faixa do limiar")
+            print(f"  Indefinidos (histerese): {n_indef} pontos na faixa do limiar")
 
     return df_analysis

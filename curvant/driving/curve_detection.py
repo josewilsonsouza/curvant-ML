@@ -83,8 +83,8 @@ def _sigma_adaptativo(
     Parâmetros
     ----------
     target_metros : extensão espacial (em metros) que deve ser suavizada
-    sigma_min     : piso — evita suavização insuficiente
-    sigma_max     : teto — evita apagar curvas reais em GPS muito denso
+    sigma_min     : piso, evita suavização insuficiente
+    sigma_max     : teto, evita apagar curvas reais em GPS muito denso
     """
     dist = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
     dist_validas = dist[dist > 0.1]    # descarta pontos quase coincidentes
@@ -99,10 +99,10 @@ def _sigma_adaptativo(
 # Grau de curva: D = 1145.92 / R  (graus por corda de 20 m)
 # Referência: Manual de Projeto Geométrico de Rodovias Rurais, DNIT (2010)
 _DNIT_LIMIARES: list[tuple[float, str]] = [
-    (50,  'muito_fechada'),  # D > 22.9° — risco muito alto
-    (100, 'fechada'),        # 11.5° < D ≤ 22.9° — risco alto
-    (200, 'media'),          # 5.7°  < D ≤ 11.5° — risco moderado
-    (500, 'aberta'),         # 2.3°  < D ≤  5.7° — risco baixo
+    (50,  'muito_fechada'),  # D > 22.9°, risco muito alto
+    (100, 'fechada'),        # 11.5° < D ≤ 22.9°, risco alto
+    (200, 'media'),          # 5.7°  < D ≤ 11.5°, risco moderado
+    (500, 'aberta'),         # 2.3°  < D ≤  5.7°, risco baixo
 ]
 
 
@@ -158,7 +158,7 @@ def detectar_curvas(df,
     if len(df_unicos) < 4:
         raise ValueError(
             f"Trajeto {df['id_route'].iloc[0]!r} tem apenas {len(df_unicos)} ponto(s) "
-            "únicos após drop_duplicates — mínimo de 4 para spline cúbica."
+            "únicos após drop_duplicates, mínimo de 4 para spline cúbica."
         )
 
     x = df_unicos['x'].values
@@ -168,7 +168,7 @@ def detectar_curvas(df,
         sigma = _sigma_adaptativo(x, y)
 
     # Derivadas da trajetória via spline (interpoladora se sigma_gps=0,
-    # suavizadora por comprimento de arco se sigma_gps>0 — evita overshoot)
+    # suavizadora por comprimento de arco se sigma_gps>0, evita overshoot)
     dxdt, dydt, ddx, ddy = _derivadas_spline(x, y, sigma_gps=sigma_gps)
 
     # Curvatura de Frenet: κ = |x'y'' - y'x''| / (x'^2 + y'^2)^(3/2)
@@ -217,7 +217,7 @@ def identificar_trechos_curvos(df: pd.DataFrame) -> pd.DataFrame:
     partes = []
 
     for traj in df['id_route'].unique():
-        trecho_id = 1  # reinicia por rota — evita IDs globais que crescem indefinidamente
+        trecho_id = 1  # reinicia por rota, evita IDs globais que crescem indefinidamente
         df_traj = df.query(f'id_route == "{traj}"').copy().reset_index(drop=True)
         df_traj['trecho_curvo'] = 0
         em_trecho = False

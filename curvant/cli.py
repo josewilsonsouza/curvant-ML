@@ -75,7 +75,7 @@ def _cache_valido(cache_path: str, data_path: str) -> bool:
     return os.path.getmtime(cache_path) >= os.path.getmtime(data_path)
 
 
-def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: bool = False,
+def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_correcao: bool = False,
                        arg_data: str | None = None):
     """Carrega features do cache ou reconstrói o pipeline (etapas 1-5)."""
     data_path, is_clean, nome = _resolver_dataset(cfg, arg_data)
@@ -96,7 +96,7 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
         return df_analysis, features_df
 
     if not is_clean:
-        print(f"  AVISO: dados limpos não encontrados. Execute 'cvt --preprocessar --input {data_path}' primeiro.")
+        print(f"  AVISO: dados limpos não encontrados. Execute 'cvt preprocess --data {data_path}' primeiro.")
 
     print("[1/5] Carregando dados...")
     print(f"  Usando: {data_path}")
@@ -113,10 +113,10 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
     dfs_curves['abs_accel'] = np.sqrt(dfs_curves['accel_x'] ** 2 + dfs_curves['accel_y'] ** 2)
 
     print("\n[4/5] Caracterizando a condução...")
-    df_analysis = label_driving.run(dfs_curves, cfg, mostrar_risco=mostrar_risco)
+    df_analysis = label_driving.run(dfs_curves, cfg, mostrar_correcao=mostrar_correcao)
 
     print("\n[5/5] Identificando trechos curvos e extraindo features...")
-    features_df = extract_features.run(df_analysis, cfg, feat_cfg, mostrar_risco=mostrar_risco)
+    features_df = extract_features.run(df_analysis, cfg, feat_cfg, mostrar_correcao=mostrar_correcao)
 
     df_analysis.to_parquet(cache_analysis, index=False)
     features_df.to_parquet(cache_features, index=False)
@@ -125,9 +125,9 @@ def _carregar_features(cfg: dict, feat_cfg: dict, rebuild: bool, mostrar_risco: 
 
 
 _DESCRICAO_ALVO = {
-    'risk':     'Segura/Risco (manobra_combinado_curva)',
-    'isl':      'faixa de ISL (baixo/medio/alto)',
     'velocity': 'velocidade crítica (v_critica)',
+    'isl':      'isl_p95, com a faixa cortada da predição',
+    'correcao': 'correção tardia dentro da curva (correcao_tardia_curva)',
 }
 
 
@@ -150,16 +150,16 @@ def _build_parser() -> argparse.ArgumentParser:
         prog='cvt',
         description=(
             'CurvantML - dois eixos: a REPRESENTAÇÃO da entrada (tab | seq) e o ALVO '
-            '(risk | isl | velocity). O mesmo alvo roda nas duas representações, que é como '
-            'se compara se a série bruta ganha das features agregadas.'
+            '(velocity | isl | correcao). O mesmo alvo roda nas duas representações, que é '
+            'como se compara se a série bruta ganha das features agregadas.'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             'Exemplos:\n'
-            '  cvt tab risk           features agregadas -> Segura/Risco\n'
-            '  cvt seq velocity       série bruta        -> velocidade (+ISL, multitarefa)\n'
-            '  cvt tab isl            features agregadas -> faixa de ISL\n'
-            '  cvt seq isl            série bruta        -> faixa de ISL\n'
+            '  cvt tab velocity       features agregadas -> velocidade critica\n'
+            '  cvt seq velocity       serie bruta        -> velocidade (+ISL, multitarefa)\n'
+            '  cvt tab isl            features agregadas -> isl_p95 (+faixa)\n'
+            '  cvt tab correcao       features agregadas -> correcao tardia\n'
             '  cvt preprocess         limpa os dados brutos\n'
         ),
     )
@@ -169,7 +169,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_alvo(sub, 'seq', 'Representação de sequência: janela bruta de série temporal')
 
     pre = sub.add_parser('preprocess', help='Limpa os dados brutos (detecta o arquivo principal)')
-    pre.add_argument('--input',  type=str, default=None, help='Arquivo bruto a limpar')
+    pre.add_argument('--data',   type=str, default=None, help='Arquivo bruto a limpar')
     pre.add_argument('--output', type=str, default=None, help='Arquivo limpo de saída')
 
     return parser
@@ -185,7 +185,7 @@ def main() -> None:
 
     if args.repr == 'preprocess':
         from curvant.utils.preprocessing import executar_preprocessamento
-        in_path = args.input or _input_bruto(carregar_config())
+        in_path = args.data or _input_bruto(carregar_config())
         print(f"[preprocess] Limpando os dados brutos: {in_path}")
         executar_preprocessamento(in_path, args.output)
         return
@@ -194,7 +194,7 @@ def main() -> None:
     cfg      = carregar_config()
     feat_cfg = carregar_features_config()
     df_analysis, features_df = _carregar_features(
-        cfg, feat_cfg, args.rebuild, mostrar_risco=(args.target == 'risk'),
+        cfg, feat_cfg, args.rebuild, mostrar_correcao=(args.target == 'correcao'),
         arg_data=args.data,
     )
 
@@ -208,3 +208,7 @@ def main() -> None:
         train_seq.run(args.target, df_analysis, features_df, cfg, feat_cfg, plot)
 
     print("\nDone.")
+
+
+if __name__ == '__main__':
+    main()

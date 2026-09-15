@@ -31,17 +31,15 @@ _SENSORS_PADRAO = ['vehicle_speed', 'accel_x', 'accel_y', 'engine_rpm']
 _ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
 
 # Targets de classificação e número de classes
-_TARGETS_BINARIOS_TS  = {
-    'manobra_combinado_curva', 'manobra_frenagem_curva',
-    'manobra_ziguezague_curva',
-}
+_TARGETS_BINARIOS_TS  = {'correcao_tardia_curva'}
 _TARGETS_MULTICLASS_TS = {'isl_class': 3}
 _TARGETS_CLASSIF_TS    = _TARGETS_BINARIOS_TS | set(_TARGETS_MULTICLASS_TS)
 
 # Alvos aceitos pela representação de sequência (`cvt seq <alvo>`). São os mesmos três alvos
-# da representação tabular, para as duas serem comparáveis célula a célula. isl_max/isl_mean
-# ficaram de fora: eram redundantes com isl_class e confundiam o que a flag prevê.
-_TARGETS_SEQ = {'v_critica', 'isl_class', 'manobra_combinado_curva'}
+# da representação tabular, para as duas serem comparáveis célula a célula. O ISL entra como
+# isl_p95 (regressão), não mais como faixa: ver o cabeçalho de steps/train_tab.py. isl_class
+# continua existindo como coluna, porque a cabeça auxiliar da multitarefa usa a faixa medida.
+_TARGETS_SEQ = {'v_critica', 'isl_p95', 'correcao_tardia_curva'}
 
 def _unidade(target: str) -> str:
     """Unidade do alvo. O ISL é adimensional."""
@@ -49,7 +47,7 @@ def _unidade(target: str) -> str:
 
 
 def _v_para_isl_class(v_kmh: np.ndarray, raios: np.ndarray) -> np.ndarray:
-    """Converte velocidade (km/h) + raio (m) → classe ISL (0=baixo,1=medio,2=alto)."""
+    """Converte velocidade (km/h) + raio (m) -> classe ISL (0=baixo,1=medio,2=alto)."""
     isl = (v_kmh / 3.6) ** 2 / (raios * _G_TS * _MU_TS)
     return np.where(isl < ISL_BAIXO, 0, np.where(isl < ISL_ALTO, 1, 2)).astype(int)
 
@@ -286,8 +284,8 @@ _TODOS_TS     = set(_MODELOS_TS) | _CLASSICOS_TS
 def _flatten_para_classico(X: np.ndarray, n_temporal: int) -> np.ndarray:
     """
     Converte (n, T, C) em features tabulares para modelos clássicos:
-      - canais temporais [0:n_temporal]: mean, std, max, min, slope → n_temporal × 5
-      - canais escalares [n_temporal:] : valor único (constante no tempo) → n_scalar
+      - canais temporais [0:n_temporal]: mean, std, max, min, slope -> n_temporal × 5
+      - canais escalares [n_temporal:] : valor único (constante no tempo) -> n_scalar
     Total: n_temporal * 5 + n_scalar  (ex.: 5×5 + 14 = 39 features)
     """
     n, T, C = X.shape
@@ -834,7 +832,7 @@ def treinar_regressao_ts(
     print(f"  Tarefa: {task.upper()} | Modelos: {modelos} | target: {target}")
     print(f"  Timesteps: {n_ts} | Sensores: {sensors}")
 
-    # Codifica isl_class (string → int) antes da extração
+    # Codifica isl_class (string -> int) antes da extração
     if target == 'isl_class' and not pd.api.types.is_numeric_dtype(features_df[target]):
         features_df = features_df.copy()
         features_df[target] = features_df[target].map(_ISL_ENCODE)
@@ -908,8 +906,8 @@ def treinar_regressao_ts(
 
     # Extrai raios do teste antes da normalização (canal escalar constante)
     raios_test = None
-    if target == 'v_critica' and 'f4_raio_min' in disponiveis:
-        raio_idx   = n_seq_sensor + disponiveis.index('f4_raio_min')
+    if target == 'v_critica' and 'curva_raio_min' in disponiveis:
+        raio_idx   = n_seq_sensor + disponiveis.index('curva_raio_min')
         raios_test = X_test[:, 0, raio_idx].copy()   # valores originais, não normalizados
 
     # Normaliza sensores (fit apenas no treino) - compartilhado por todos os modelos
@@ -956,7 +954,7 @@ def treinar_regressao_ts(
             float_format='%.3f',
             index=False,
             caption=f'Representação de sequência (janela bruta pré-curva) para '
-                    f'{target.replace("_", chr(92) + "_")} — split por rota.',
+                    f'{target.replace("_", chr(92) + "_")}, split por rota.',
             label=f'tab:seq_{target}',
             position='h',
         )

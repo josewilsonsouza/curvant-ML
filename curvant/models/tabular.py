@@ -72,7 +72,7 @@ def _split_por_rota(
     )
 
     # NaN em features de raio são preenchidas com a mediana
-    # do conjunto de treino — semanticamente "raio típico" em vez de 0 (curvatura
+    # do conjunto de treino, semanticamente "raio típico" em vez de 0 (curvatura
     # infinita) que o StandardScaler interpretaria como outlier extremo negativo.
     # Demais NaN (features opcionais ausentes) ficam como 0.
     _raio_cols = [c for c in feature_cols if 'raio' in c]
@@ -138,7 +138,7 @@ def _split_rota_generico(
     return X_train, X_test, y_train, y_test, groups_train
 
 
-def _preparar_xy(df: pd.DataFrame, target: str = 'manobra') -> tuple[np.ndarray, np.ndarray]:
+def _preparar_xy(df: pd.DataFrame, target: str = 'correcao_tardia_curva') -> tuple[np.ndarray, np.ndarray]:
     """Extrai features e target como arrays numpy brutos (sem pré-processamento)."""
     feature_cols = colunas_features(df)
     checar_leakage(feature_cols, target)
@@ -152,7 +152,7 @@ def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca
     Constrói imblearn Pipeline: (SMOTE ->) StandardScaler (-> PCA) -> classificador.
 
     ImbPipeline garante que o SMOTE é re-executado apenas no fold de treino
-    durante cross_validate — amostras sintéticas nunca cruzam para o fold de
+    durante cross_validate, amostras sintéticas nunca cruzam para o fold de
     validação, evitando data leakage.
     """
     steps = []
@@ -191,7 +191,7 @@ def _preproc_train_test(
         pca = PCA(n_components=pca_n_components, random_state=random_state)
         X_train = pca.fit_transform(X_train)
         X_test  = pca.transform(X_test)
-        print(f'  PCA: {pca.n_components_} componentes — variância explicada: {pca.explained_variance_ratio_.sum():.1%}')
+        print(f'  PCA: {pca.n_components_} componentes, variância explicada: {pca.explained_variance_ratio_.sum():.1%}')
 
     return X_train, X_test, y_train
 
@@ -205,7 +205,7 @@ def aplicar_modelos_ml(
     test_size: float = 0.3,
     cv_folds: int = 5,
     pca_n_components=None,
-    target: str = 'manobra',
+    target: str = 'correcao_tardia_curva',
     f1_average: str = 'weighted',
     outdir: str = 'results',
     labels: list[str] | None = None,
@@ -218,11 +218,11 @@ def aplicar_modelos_ml(
       1. Split estratificado nos dados BRUTOS (antes de SMOTE / scaler / PCA)
       2. StratifiedKFold sobre X_train bruto
       3. Dentro de cada fold: SMOTE -> Scaler (-> PCA) -> fit  (via ImbPipeline)
-         — amostras sintéticas nunca cruzam para o fold de validação
+        , amostras sintéticas nunca cruzam para o fold de validação
       4. Avaliação no teste com Acurácia, F1, Precisão, Recall
 
     pca_n_components : None | int (nº de componentes) | float 0–1 (variância explicada)
-    labels           : nomes das classes para a matriz de confusão (default: Segura/Risco)
+    labels           : nomes das classes para a matriz de confusão (default: Negativo/Positivo)
     """
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
@@ -282,8 +282,8 @@ def aplicar_modelos_ml(
             cm = confusion_matrix(y_test, y_pred)
             plt.figure(figsize=(6, 4))
             sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                        xticklabels=(labels or ['Segura', 'Risco']),
-                        yticklabels=(labels or ['Segura', 'Risco']))
+                        xticklabels=(labels or ['Negativo', 'Positivo']),
+                        yticklabels=(labels or ['Negativo', 'Positivo']))
             plt.title(nome)
             plt.ylabel('Real')
             plt.xlabel('Prevista')
@@ -307,7 +307,7 @@ def aplicar_modelos_ml(
         os.path.join(outdir, 'resultados.tex'),
         float_format='%.3f',
         index=False,
-        caption='Resultados dos modelos clássicos de ML — validação cruzada por rota (GroupKFold) e conjunto de teste.',
+        caption='Resultados dos modelos clássicos de ML, validação cruzada por rota (GroupKFold) e conjunto de teste.',
         label='tab:ml_resultados',
         position='h',
         column_format='lcccccc',
@@ -315,7 +315,7 @@ def aplicar_modelos_ml(
     return df_res
 
 
-# Optuna — Tuning de XGBoost e RandomForest
+# Optuna, Tuning de XGBoost e RandomForest
 
 def _optuna_xgb(
     X_train: np.ndarray,
@@ -443,7 +443,7 @@ def aplicar_modelos_ml_otimizados(
     n_trials_rf: int = 30,
     n_trials_lr: int = 20,
     timeout: int | None = None,
-    target: str = 'manobra',
+    target: str = 'correcao_tardia_curva',
     f1_average: str = 'weighted',
     outdir: str = 'results',
 ) -> pd.DataFrame:
@@ -516,8 +516,8 @@ def aplicar_modelos_ml_otimizados(
             cm = confusion_matrix(y_test, y_pred)
             plt.figure(figsize=(6, 4))
             sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                        xticklabels=['Segura', 'Risco'],
-                        yticklabels=['Segura', 'Risco'])
+                        xticklabels=['Negativo', 'Positivo'],
+                        yticklabels=['Negativo', 'Positivo'])
             plt.title(nome)
             plt.ylabel('Real')
             plt.xlabel('Prevista')
@@ -536,7 +536,7 @@ def aplicar_modelos_ml_otimizados(
         os.path.join(outdir, 'resultados_otimizado.tex'),
         float_format='%.3f',
         index=False,
-        caption='Resultados dos modelos com tuning Optuna (XGBoost e RandomForest) — validação cruzada por rota (GroupKFold) e conjunto de teste.',
+        caption='Resultados dos modelos com tuning Optuna (XGBoost e RandomForest), validação cruzada por rota (GroupKFold) e conjunto de teste.',
         label='tab:ml_resultados_opt',
         position='h',
         column_format='lcccccc',
@@ -570,7 +570,7 @@ def plotar_scatter_regressao(
     ax.plot(lim, lim, color='tomato', linewidth=1.2, linestyle='--', label='y = x')
     ax.set_xlim(lim)
     ax.set_ylim(lim)
-    ax.set_xlabel(f'Real — {target}')
+    ax.set_xlabel(f'Real, {target}')
     ax.set_ylabel('Previsto')
     ax.set_title(f'{nome_modelo}\nR² = {r2:.3f}')
     ax.legend(fontsize=9)
@@ -595,6 +595,7 @@ def treinar_regressao(
     cv_folds: int = 5,
     outdir: str = 'results',
     unidade: str = 'km/h',
+    classes_derivadas=None,
 ) -> pd.DataFrame:
     """
     Modelos clássicos de regressão sobre as features agregadas por curva.
@@ -606,6 +607,11 @@ def treinar_regressao(
     Sem SMOTE (alvo contínuo) e com GroupKFold em vez de StratifiedGroupKFold, pelo mesmo
     motivo. Reporta uma referência trivial (prever sempre a média do treino), que é o piso
     abaixo do qual um modelo não tem serventia.
+
+    classes_derivadas: função que corta o valor contínuo em faixas. Quando dada, cada modelo
+    também reporta o F1-macro da faixa obtida cortando a predição, o que permite comparar a
+    regressão com um classificador treinado direto nas faixas sem perder a distância até o
+    limiar durante o treino.
     """
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
@@ -651,6 +657,15 @@ def treinar_regressao(
         print(f'{nome:22s}  CV R²: {cv_r2:7.4f}  CV MAE: {cv_mae:6.3f}  |  '
               f'Teste R²: {r2:7.4f}  MAE: {mae:6.3f} {unidade}')
 
+        f1_faixa = acc_faixa = None
+        if classes_derivadas is not None:
+            cls_pred = classes_derivadas(y_pred)
+            cls_true = classes_derivadas(y_test)
+            f1_faixa  = f1_score(cls_true, cls_pred, average='macro')
+            acc_faixa = accuracy_score(cls_true, cls_pred)
+            print(f'{"":22s}  -> faixa cortada da predição  F1-macro: {f1_faixa:.4f}  '
+                  f'Acc: {acc_faixa:.4f}')
+
         if plot:
             plotar_scatter_regressao(y_test, y_pred, target, nome, outdir=outdir)
 
@@ -660,6 +675,8 @@ def treinar_regressao(
             f'CV MAE ({unidade})':  cv_mae,
             'R² (teste)':    r2,
             f'MAE ({unidade})':     mae,
+            **({'F1-macro da faixa': f1_faixa, 'Acc da faixa': acc_faixa}
+               if classes_derivadas is not None else {}),
         })
 
     df_res = pd.DataFrame(linhas)
@@ -668,7 +685,7 @@ def treinar_regressao(
         os.path.join(outdir, 'resultados.tex'),
         float_format='%.3f',
         index=False,
-        caption=f'Regressão tabular para {target.replace("_", chr(92) + "_")} — '
+        caption=f'Regressão tabular para {target.replace("_", chr(92) + "_")}, '
                 f'validação cruzada por rota (GroupKFold) e conjunto de teste.',
         label=f'tab:reg_{target}',
         position='h',

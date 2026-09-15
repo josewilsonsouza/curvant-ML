@@ -1,12 +1,17 @@
 import numpy as np
 import pandas as pd
 
-from curvant.constants import G as _G, MU as _MU_PADRAO, ISL_ALTO, RAIO_MIN_ISL
+from curvant.constants import G as _G, MU as _MU_PADRAO, RAIO_MIN_ISL
 from curvant.driving.isl import classificar_isl
-from curvant.driving.risk_measures import calcular_bearing as _calcular_bearing_gps
 
-# Encoding numérico da classe DNIT para feature prev_dnit_num
-_DNIT_NUM = {'suave': 0, 'aberta': 1, 'media': 2, 'fechada': 3, 'muito_fechada': 4}
+def calcular_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Ângulo de direção (bearing) entre dois pontos GPS, em graus [0, 360)."""
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlon = lon2 - lon1
+    x = np.sin(dlon) * np.cos(lat2)
+    y = np.cos(lat1) * np.sin(lat2) - np.sin(lat1) * np.cos(lat2) * np.cos(dlon)
+    return (np.degrees(np.arctan2(x, y)) + 360) % 360
+
 
 _FEATURES_ATIVAS: list[str] | None = None
 
@@ -65,7 +70,7 @@ def _resolver_vars_sensor(vars_sensor: list | None) -> list:
             return cfg_vars
     except Exception:
         pass
-    return ['vehicle_speed', 'engine_rpm', 'accel_x', 'accel_y']
+    return ['vehicle_speed']
 
 
 # Janela pré-curva
@@ -118,13 +123,13 @@ def _montar_janela_precurva(
     return janela
 
 
-# Grupos de features
+# Features da janela de aproximação
 
 def _features_sensores(janela: pd.DataFrame, vars_sensor: list) -> dict:
-    """
-    Grupo 1 - estatísticas dos sensores OBD na janela pré-curva.
-    Para cada sensor: mean/std/median/max/min/slope/cv + mean_tarde/slope_tarde
-    (a metade final da janela, mais perto da curva).
+    """Estatísticas de cada sensor na janela de aproximação.
+
+    As versões "tarde" repetem a conta só na metade final da janela, que é o trecho
+    mais perto da entrada da curva.
     """
     out: dict = {}
     t = janela['time_sec'].values - janela['time_sec'].values[0]
@@ -160,16 +165,9 @@ def _features_sensores(janela: pd.DataFrame, vars_sensor: list) -> dict:
 
 
 def _features_bearing_janela(janela: pd.DataFrame) -> dict:
-    """
-    Grupo 2 (bearing) - oscilação de direção na janela pré-curva.
-    Precursores diretos do critério de zigue-zague: variação de bearing e
-    contagem de alternâncias de direção na aproximação.
-    """
-    out = {
-        'precurva_bearing_std':      0.0,
-        'precurva_n_mudancas_dir':   0,
-        'precurva_bearing_range':    0.0,
-    }
+    """Oscilação de direção na aproximação: o quanto o rumo variou e quantas vezes
+    o motorista trocou de lado."""
+    out = {'precurva_n_mudancas_dir': 0, 'precurva_bearing_range': 0.0}
 
     cols_ok = {'lat', 'lon', 'vehicle_speed'}.issubset(janela.columns)
     if not cols_ok or len(janela) < 3:
@@ -182,7 +180,7 @@ def _features_bearing_janela(janela: pd.DataFrame) -> dict:
     lats = janela_mov['lat'].tolist()
     lons = janela_mov['lon'].tolist()
     bearings = np.array([
-        _calcular_bearing_gps(lats[i - 1], lons[i - 1], lats[i], lons[i])
+        calcular_bearing(lats[i - 1], lons[i - 1], lats[i], lons[i])
         for i in range(1, len(lats))
     ])
 
@@ -191,10 +189,9 @@ def _features_bearing_janela(janela: pd.DataFrame) -> dict:
         for i in range(1, len(bearings))
     ])
 
-    out['precurva_bearing_std']   = float(np.std(deltas)) if len(deltas) > 1 else 0.0
-    out['precurva_bearing_range'] = float(np.ptp(deltas))  # range sobre deltas circulares, não bearings brutos
+    # amplitude sobre as variações, não sobre os bearings brutos, que dão a volta em 360
+    out['precurva_bearing_range'] = float(np.ptp(deltas))
 
-    # mesma lógica de alternância do critério de zigue-zague (limiar 15°)
     contador, ultimo_sinal = 0, 0
     for d in deltas:
         if abs(d) > 15.0:
@@ -207,93 +204,51 @@ def _features_bearing_janela(janela: pd.DataFrame) -> dict:
     return out
 
 
-def _features_dinamica(janela: pd.DataFrame) -> dict:
-    """
-    Grupo 2 - dinâmica derivada da aproximação:
-    jerk (variação brusca da aceleração), comprimento da janela, contagem de
-    eventos onde a aceleração ultrapassa um limite e oscilação de direção (bearing).
-    """
-    out: dict = {}
-
-    for var in ['accel_x', 'accel_y']:
-        vals = janela[var].values
-        dt_arr = np.diff(janela['time_sec'].values)
-        dt_arr = np.where(dt_arr > 0, dt_arr, 1e-3)
-        jerk = np.diff(vals) / dt_arr
-        out[f'jerk_{var[-1]}_max'] = float(np.abs(jerk).max()) if len(jerk) > 0 else 0.0
-        out[f'jerk_{var[-1]}_std'] = float(np.std(jerk))       if len(jerk) > 1 else 0.0
-
-    # distance_car_curve = comprimento da janela pré-curva (distância coberta pela
-    # aproximação). NÃO é a distância até a curva - a janela termina lead_gap metros
-    # antes da entrada (ver TARGETS_E_FEATURES.md).
-    out['distance_car_curve'] = float(
-        janela['distancia_acumulada'].max() - janela['distancia_acumulada'].min()
-    )
-
-    _kamm_lim = 0.7 * _MU_PADRAO * _G
-    _accel_total = np.sqrt(janela['accel_x'].values**2 + janela['accel_y'].values**2)
-    out['n_perigo_accel_precurva']   = int((_accel_total > _kamm_lim).sum())
-    out['precurva_abs_accel_max']    = float(_accel_total.max())
-    out['n_perigo_lateral_precurva'] = int((janela['accel_y'].abs() > 2.0).sum())
-
-    out.update(_features_bearing_janela(janela))
-
-    return out
-
 def _features_geometria_janela(janela: pd.DataFrame) -> dict:
+    """Quão sinuoso já era o trecho antes da curva.
+
+    A B-spline é ajustada ao trajeto inteiro, então a curvatura medida aqui sofre
+    alguma influência dos pontos da curva que vem à frente.
     """
-    Grupo 3 - raio de curvatura na janela pré-curva.
-    Atenção: a B-spline é ajustada ao trajeto inteiro, então a curvatura aqui é
-    influenciada pelos pontos da curva à frente (spline global + filtro Gaussiano).
-    """
-    nan3 = {'precurva_raio_min': np.nan, 'precurva_raio_mean': np.nan, 'precurva_raio_last': np.nan}
+    vazio = {'precurva_raio_min': np.nan, 'precurva_raio_mean': np.nan, 'precurva_raio_last': np.nan}
     if 'raio_curvatura' not in janela.columns:
-        return nan3
+        return vazio
 
     raios = janela['raio_curvatura']
     raios = raios[np.isfinite(raios) & (raios > 0)].clip(upper=2000.0)
     if len(raios) == 0:
-        return nan3
+        return vazio
 
     return {
         'precurva_raio_min':  float(raios.min()),
         'precurva_raio_mean': float(raios.mean()),
-        'precurva_raio_last': float(raios.iloc[-1]),  # último ponto = mais perto da curva
+        'precurva_raio_last': float(raios.iloc[-1]),   # o ponto mais perto da curva
     }
 
 # Alvos (medidos dentro da curva)
 
-def _alvos_manobra(curva: pd.DataFrame) -> dict:
-    """Targets de classificação de manobra - disparou cada critério na curva?"""
-    out = {
-        'manobra_frenagem_curva':   1 if curva['manobra_frenagem'].any() else 0,
-        'manobra_ziguezague_curva': 1 if curva['manobra_ziguezague'].any() else 0,
-        'manobra_combinado_curva':  1 if curva['manobra_combinado'].any() else 0,
+def _alvos_correcao(curva: pd.DataFrame) -> dict:
+    """Target de correção tardia: o motorista freou forte dentro da curva?
+
+    A flag de indefinição marca as curvas na faixa morta do limiar, onde o rótulo
+    binário é decidido pelo ruído da medida. Serve para descartá-las do treino,
+    nunca como feature.
+    """
+    return {
+        'correcao_tardia_curva':     1 if curva['correcao_tardia'].any() else 0,
+        'correcao_indefinida_curva': 1 if 'correcao_indefinida' in curva.columns
+                                       and curva['correcao_indefinida'].any() else 0,
     }
-    # Flags de histerese: curva na faixa morta do limiar (rótulo decidido por ruído).
-    # Usadas para descartar essas curvas do treino do risco, nunca como feature.
-    for alvo, col in (('manobra_indefinida_curva',       'manobra_indefinido'),
-                      ('manobra_frenagem_indef_curva',   'manobra_frenagem_indef')):
-        out[alvo] = 1 if col in curva.columns and curva[col].any() else 0
-    out['manobra'] = out['manobra_combinado_curva']  # retrocompat
-    return out
 
 def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
-    """
-    Targets de ISL e velocidade crítica.
-    - ISL cinemático: v²/(R·g·μ) = ctp_accel/(g·μ) - depende do raio GPS (B-spline).
-    - v_critica: velocidade real no ponto de pico do ISL (prever isto equivale a prever ISL).
+    """Quanto a curva exigiu da aderência, e a que velocidade.
 
-    Havia aqui um terceiro alvo, isl_sensor_*, que era |accel_y|/(g·μ). Saiu em ago/2026:
-    o acelerômetro é do celular da coleta e mede vibração, não a dinâmica do veículo
-    (ver ANALISE_DADOS.md). Nenhum subcomando o usava.
+    O ISL é v²/(R·g·μ) ponto a ponto. A curva é resumida pelo percentil 95, não pelo
+    máximo: o máximo se deixa levar por um único raio espúrio da B-spline, que faz
+    v²/R explodir. Pela mesma razão o raio recebe um piso próprio antes da conta.
 
-    A classe (isl_class) sai do p95 do ISL na curva, não do máximo. O máximo pega o pior
-    ponto isolado, que num spline interpolador de GPS costuma ser um raio espúrio minúsculo
-    (v²/R explode); o p95 pega "o instante quase pior" sem se deixar sequestrar por um ponto
-    de ruído. O ISL aqui usa um piso de raio próprio (RAIO_MIN_ISL), isolado do ctp_accel do
-    risco: raios de B-spline abaixo dele são ruído e fariam v²/R explodir (com 5 m o isl_max
-    chegava a 22, impossível). Piso + p95 juntos entregam um rótulo em faixa física plausível.
+    A v_critica é a velocidade real no ponto de maior ISL, então prever uma equivale
+    a prever a outra.
     """
     out: dict = {}
 
@@ -302,104 +257,52 @@ def _alvos_isl(pts_curva: pd.DataFrame) -> dict:
         raio     = np.clip(pts_curva['raio_curvatura'].abs().values, RAIO_MIN_ISL, None)
         isl_vals = (v_ms ** 2) / (raio * _G * _MU_PADRAO)
         isl_p95  = float(np.percentile(isl_vals, 95))
-        out['isl_mean']  = float(isl_vals.mean())
         out['isl_max']   = float(isl_vals.max())
         out['isl_p95']   = isl_p95
         out['isl_class'] = classificar_isl(isl_p95)
-        out['isl_alto']  = 1 if isl_p95 >= ISL_ALTO else 0
         idx_max          = int(np.argmax(isl_vals))
-        out['v_critica'] = float(pts_curva['vehicle_speed'].values[idx_max])  # km/h
+        out['v_critica'] = float(pts_curva['vehicle_speed'].values[idx_max])
     else:
-        out['isl_mean'] = out['isl_max'] = out['isl_p95'] = np.nan
-        out['isl_class'] = out['isl_alto'] = np.nan
+        out['isl_max'] = out['isl_p95'] = out['isl_class'] = np.nan
         out['v_critica'] = np.nan
 
     return out
 
-def _alvos_pedal(pts_curva: pd.DataFrame) -> dict:
-    """Targets de comportamento do acelerador dentro da curva."""
-    col = 'accelerator_pedal_pos_d'
-    vazio = {'accel_pedal_min_curva': np.nan, 'accel_pedal_mean_curva': np.nan}
-    if col not in pts_curva.columns:
-        return vazio
-    vals = pts_curva[col].dropna()
-    if vals.empty:
-        return vazio
-    return {
-        'accel_pedal_min_curva':  float(vals.min()),
-        'accel_pedal_mean_curva': float(vals.mean()),
-    }
-
-def _features_pedal_janela(janela: pd.DataFrame, dist_entrada: float) -> dict:
-    """
-    Feature comportamental: distância (m) antes da entrada em que o motorista
-    fechou o acelerador pela última vez (pedal < 10%).
-    Zero = nunca fechou na janela (entrou acelerando).
-    Maior valor = fechou o acelerador mais cedo = abordagem mais controlada.
-    """
-    col = 'accelerator_pedal_pos_d'
-    if col not in janela.columns or janela[col].isna().all():
-        return {'throttle_off_distance': np.nan}
-    fechado = janela[janela[col] < 10.0]
-    if fechado.empty:
-        return {'throttle_off_distance': 0.0}
-    dist_ultimo_fechado = float(fechado['distancia_acumulada'].max())
-    return {'throttle_off_distance': max(0.0, dist_entrada - dist_ultimo_fechado)}
-
 def _geometria_curva(pts_curva: pd.DataFrame) -> dict:
+    """Geometria da curva que vem pela frente.
+
+    Entra como feature porque a rota é conhecida de antemão. O raio, porém, não vem
+    de mapa: sai da mesma B-spline que gera o rótulo de ISL, então feature e alvo
+    compartilham o ruído do GPS. Ver docs/TARGETS_E_FEATURES.md.
     """
-    Grupo 4 - geometria real da curva à frente.
-    curve_* são auxiliares (excluídas das features); f4_* são as cópias usadas
-    como feature (a rota é conhecida, então a geometria à frente é legítima).
-    """
-    out: dict = {}
+    if 'raio_curvatura' not in pts_curva.columns:
+        return {'curva_raio_min': np.nan, 'curva_raio_mean': np.nan}
 
-    if 'raio_curvatura' in pts_curva.columns:
-        out['curve_raio_min']  = float(pts_curva['raio_curvatura'].min())
-        out['curve_raio_mean'] = float(pts_curva['raio_curvatura'].mean())
-    else:
-        out['curve_raio_min'] = out['curve_raio_mean'] = np.nan
+    raios = pts_curva['raio_curvatura']
+    return {'curva_raio_min': float(raios.min()), 'curva_raio_mean': float(raios.mean())}
 
-    if 'classe_dnit' in pts_curva.columns:
-        dnit_mode = pts_curva['classe_dnit'].mode()
-        out['curve_dnit_num'] = _DNIT_NUM.get(
-            dnit_mode.iloc[0] if not dnit_mode.empty else 'suave', 0
-        )
-    else:
-        out['curve_dnit_num'] = 0
-
-    out['f4_raio_min']  = out['curve_raio_min']
-    out['f4_raio_mean'] = out['curve_raio_mean']
-    out['f4_dnit_num']  = out['curve_dnit_num']
-
-    return out
 
 def _adicionar_contexto(df_out: pd.DataFrame) -> pd.DataFrame:
-    """
-    Grupo 5 - contexto das curvas anteriores, por rota (shift garante ausência de
-    leakage: usa só as curvas já percorridas, nunca a atual).
+    """O que o motorista já enfrentou nesta rota até aqui.
+
+    O shift garante que só entram curvas já percorridas, nunca a atual.
     """
     partes = []
-    raio_min_global  = df_out['curve_raio_min'].median()
-    raio_mean_global = df_out['curve_raio_mean'].median()
+    raio_global = df_out['curva_raio_min'].median()
 
     for _, grupo in df_out.groupby('id_route', sort=False):
         grupo = grupo.copy()
-
         grupo['n_curvas_antes'] = np.arange(len(grupo))
-        # ISL acumulado das curvas anteriores - medido pelos sensores (v²/R·g·μ),
-        # disponível em tempo real sem depender do rótulo Segura/Risco do modelo.
-        isl_shifted = grupo['isl_max'].shift(1)
-        grupo['prev_isl_max']   = isl_shifted.fillna(0.0).round(3)
-        grupo['mean_isl_antes'] = isl_shifted.expanding().mean().fillna(0.0).round(3)
 
-        grupo['prev_raio_min']  = grupo['curve_raio_min'].shift(1).fillna(raio_min_global)
-        grupo['prev_raio_mean'] = grupo['curve_raio_mean'].shift(1).fillna(raio_mean_global)
-        grupo['prev_dnit_num']  = grupo['curve_dnit_num'].shift(1).fillna(0).astype(int)
+        isl_anterior = grupo['isl_max'].shift(1)
+        grupo['prev_isl_max']   = isl_anterior.fillna(0.0).round(3)
+        grupo['mean_isl_antes'] = isl_anterior.expanding().mean().fillna(0.0).round(3)
+        grupo['prev_raio_min']  = grupo['curva_raio_min'].shift(1).fillna(raio_global)
 
         partes.append(grupo)
 
     return pd.concat(partes, ignore_index=True)
+
 
 # Orquestração
 
@@ -412,24 +315,16 @@ def extrair_features(
     lead_gap: float = 0.0,
     vars_sensor: list | None = None,
 ) -> pd.DataFrame:
-    """
-    Extrai, por curva, as features da janela pré-curva e os targets medidos dentro
-    da curva. Monta a janela e delega cada grupo a uma função dedicada:
+    """Monta, para cada curva, as features da aproximação e os alvos medidos dentro dela.
 
-      _features_sensores        Grupo 1 - estatísticas dos sensores OBD
-      _features_dinamica        Grupo 2 - jerk, tamanho da janela, contagem de eventos
-      _features_geometria_janela Grupo 3 - raio na janela pré-curva
-      _geometria_curva          Grupo 4 - geometria real da curva à frente (f4_*)
-      _adicionar_contexto       Grupo 5 - contexto das curvas anteriores (post-hoc)
+    A janela de aproximação tem tamanho fixo (precurva_distancia) ou proporcional à
+    distância de frenagem confortável, e termina lead_gap metros antes da entrada,
+    que é o que torna a predição antecipada.
 
-      _alvos_manobra / _alvos_isl - targets dentro da curva
-
-    Janela pré-curva: distância fixa (precurva_distancia) ou dinâmica
-    d = v²/(2·a_confort) ∈ [precurva_distancia_min, precurva_distancia_max]. A janela
-    termina lead_gap metros antes da entrada (predição antecipada).
+    O que sai daqui são todas as colunas possíveis. Quem escolhe as que o modelo vê
+    é a whitelist do features.yaml.
     """
     df = data.copy()
-    df['conducao'] = df['conducao'].map({'Perigosa': 1, 'Segura': 0})
     df = df.sort_values(by=['id_route', 'time_sec'])
     vars_sensor = _resolver_vars_sensor(vars_sensor)
 
@@ -455,16 +350,14 @@ def extrair_features(
             'id_trecho_curvo': trecho_curvo,
         }
         row.update(_features_sensores(janela, vars_sensor))
-        row.update(_features_dinamica(janela))
+        row.update(_features_bearing_janela(janela))
         row.update(_features_geometria_janela(janela))
-        row.update(_features_pedal_janela(janela, dist_entrada))
-        row.update(_alvos_manobra(curva))
+        row.update(_alvos_correcao(curva))
 
         pts_curva = curva[curva['curva'] == True] if 'curva' in curva.columns else curva
         if pts_curva.empty:
             pts_curva = curva
         row.update(_alvos_isl(pts_curva))
-        row.update(_alvos_pedal(pts_curva))
         row.update(_geometria_curva(pts_curva))
 
         dados_janela.append(row)

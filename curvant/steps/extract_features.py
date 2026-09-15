@@ -2,7 +2,7 @@ import pandas as pd
 from curvant.driving.curve_detection import identificar_trechos_curvos
 from curvant.driving.features import extrair_features
 
-def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_risco: bool = True) -> pd.DataFrame:
+def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_correcao: bool = True) -> pd.DataFrame:
     """
     Extrai features e alvos por curva.
 
@@ -10,9 +10,8 @@ def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_risco: boo
     e que o trajeto completo (lat, lon) está disponível.
     """
     df_analysis = df_analysis.copy()
-    for col in ['manobra_frenagem', 'manobra_ziguezague', 'manobra_combinado']:
-        if col in df_analysis.columns:
-            df_analysis[col] = df_analysis[col].astype(int)
+    if 'correcao_tardia' in df_analysis.columns:
+        df_analysis['correcao_tardia'] = df_analysis['correcao_tardia'].astype(int)
 
     dfs_trechos = identificar_trechos_curvos(df_analysis)
     ex = feat_cfg['extracao']
@@ -26,10 +25,10 @@ def run(df_analysis: pd.DataFrame, cfg: dict, feat_cfg: dict, mostrar_risco: boo
         vars_sensor=ex.get('vars_sensor'),
     )
 
-    if mostrar_risco:
-        n_perigosa = features_df['manobra_combinado_curva'].sum()
-        n_segura   = (features_df['manobra_combinado_curva'] == 0).sum()
-        print(f"  {len(features_df)} amostras — Risco: {n_perigosa} | Segura: {n_segura}")
+    if mostrar_correcao:
+        n_pos = int(features_df['correcao_tardia_curva'].sum())
+        print(f"  {len(features_df)} curvas, com correção tardia: {n_pos} "
+              f"({100*n_pos/len(features_df):.1f}%)")
     else:
         print(f"  {len(features_df)} amostras (curvas)")
 

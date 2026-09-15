@@ -1,71 +1,66 @@
 """
-Representação tabular: modelos sobre as features agregadas por curva (features_df).
+Representação tabular: modelos sobre as features já resumidas por curva.
 
 Um alvo por subcomando (`cvt tab <alvo>`):
-    risk      - Segura/Risco (manobra_combinado_curva) + um modelo por critério
-    isl       - faixa de ISL (baixo/medio/alto), classificação multiclasse
-    velocity  - velocidade crítica (v_critica), regressão
+    velocity  velocidade crítica, regressão
+    isl       isl_p95, regressão; a faixa sai do corte da predição
+    correcao  correção tardia dentro da curva, classificação binária
 
-É a contraparte de train_seq: mesmos alvos, mesma divisão por rota, mas a entrada aqui é o
-vetor de features da curva, não a janela bruta de série temporal.
+É a contraparte de train_seq: mesmos alvos e mesmo corte por rota, mas a entrada aqui
+é o vetor de features da curva em vez da janela bruta de série temporal.
 """
 
+import numpy as np
 import pandas as pd
 
-from curvant.steps import train_risk
-
-_ISL_ENCODE = {'baixo': 0, 'medio': 1, 'alto': 2}
+from curvant.driving.isl import classificar_isl
+from curvant.steps import train_correcao
 
 _DIR = {
-    'risk':     'results/tab/risk',
-    'isl':      'results/tab/isl',
     'velocity': 'results/tab/velocity',
+    'isl':      'results/tab/isl',
+    'correcao': 'results/tab/correcao',
 }
 
 ALVOS = tuple(_DIR)
+
+
+def _faixas_isl(valores: np.ndarray) -> np.ndarray:
+    """Corta o isl_p95 previsto nas três faixas, com o mesmo critério do rótulo."""
+    return np.array([classificar_isl(float(v)) for v in valores])
 
 
 def run(target: str, features_df: pd.DataFrame, cfg: dict, plot: bool) -> None:
     if target not in _DIR:
         raise ValueError(f"Alvo '{target}' não existe em `cvt tab`. Use um de: {list(ALVOS)}")
 
-    if target == 'risk':
-        _risk(features_df, cfg, plot)
+    if target == 'correcao':
+        train_correcao.classicos(features_df, cfg, plot)
     elif target == 'isl':
         _isl(features_df, cfg, plot)
     else:
         _velocity(features_df, cfg, plot)
 
 
-def _risk(features_df, cfg, plot) -> None:
-    train_risk.classicos(features_df, cfg, plot)
-    print("\n[tab risk] Um modelo por critério de risco...")
-    train_risk.criterios_separados(features_df, cfg, plot)
-
-
 def _isl(features_df, cfg, plot) -> None:
-    from curvant.models import aplicar_modelos_ml
+    from curvant.models import treinar_regressao
 
     ml = cfg['ml']
-    df = features_df.copy()
-    if not pd.api.types.is_numeric_dtype(df['isl_class']):
-        df['isl_class'] = df['isl_class'].map(_ISL_ENCODE)
-    df = df.dropna(subset=['isl_class'])
+    df = features_df.dropna(subset=['isl_p95'])
+    faixas = pd.Series(_faixas_isl(df['isl_p95'].values)).value_counts()
+    print(f"  Faixas medidas - baixo: {faixas.get('baixo', 0)} | "
+          f"medio: {faixas.get('medio', 0)} | alto: {faixas.get('alto', 0)}")
 
-    dist = df['isl_class'].value_counts().sort_index()
-    print(f"  Faixas - baixo: {dist.get(0, 0)} | medio: {dist.get(1, 0)} | alto: {dist.get(2, 0)}")
-
-    aplicar_modelos_ml(
+    treinar_regressao(
         df,
-        plot_cm=plot,
+        target='isl_p95',
+        plot=plot,
         random_state=ml['random_state'],
         test_size=ml['test_size'],
         cv_folds=ml['cv_folds'],
-        pca_n_components=ml.get('pca_n_components'),
-        target='isl_class',
-        f1_average='macro',          # 3 classes: macro não favorece a faixa majoritária
-        labels=['baixo', 'medio', 'alto'],
         outdir=_DIR['isl'],
+        unidade='',
+        classes_derivadas=_faixas_isl,
     )
 
 

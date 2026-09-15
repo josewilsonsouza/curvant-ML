@@ -1,7 +1,6 @@
 from curvant.utils.config import carregar_config
 import numpy as np
 import pandas as pd
-import argparse
 import os
 
 _DEFAULT_INPUT  = 'data/eletro_rjdf_serra.parquet'
@@ -149,9 +148,10 @@ def executar_preprocessamento(
     out_path: str | None = None,
     overrides: dict | None = None,
 ) -> None:
-    """
-    Roda o pré-processamento usando os parâmetros do config.yaml (+ overrides
-    opcionais). Não depende de argparse — pode ser chamado direto (ex.: do run.py).
+    """Roda o pré-processamento com os parâmetros do config.yaml.
+
+    Os overrides existem para chamadas diretas de um script ou sessão interativa;
+    a CLI não os expõe, porque os mesmos valores já ficam no config.
     """
     cfg = carregar_config()
     pp  = cfg.get('preprocessing', {})
@@ -203,29 +203,3 @@ def executar_preprocessamento(
 
     df_clean.to_parquet(out_path, index=False)
     print(f"\nSalvo em: {out_path}")
-
-
-def main(args: argparse.Namespace) -> None:
-    """Entrada CLI: resolve os argumentos e delega para executar_preprocessamento."""
-    overrides = {
-        'accel_limite':             args.accel_limite,
-        'vel_max':                  args.vel_max,
-        'vel_min_parado':           args.vel_min_parado,
-        'max_parados_consecutivos': args.max_parados_consecutivos,
-        'max_gap':                  args.max_gap,
-        'min_pontos_segmento':      args.min_pontos_segmento,
-    }
-    executar_preprocessamento(args.input, args.output, overrides)
-
-def criar_parser() -> argparse.ArgumentParser:
-    """Cria parser de argumentos para CLI."""
-    parser = argparse.ArgumentParser(description='CurvantML — pré-processamento de dados OBD')
-    parser.add_argument('--input',  type=str, default=None, help=f'Arquivo parquet de entrada (padrão: {_DEFAULT_INPUT})')
-    parser.add_argument('--output', type=str, default=None, help='Arquivo parquet de saída (padrão: <input>_clean.parquet)')
-    parser.add_argument('--accel-limite',             type=float, default=None)
-    parser.add_argument('--vel-max',                  type=float, default=None)
-    parser.add_argument('--vel-min-parado',           type=float, default=None)
-    parser.add_argument('--max-parados-consecutivos', type=int,   default=None)
-    parser.add_argument('--max-gap',                  type=float, default=None)
-    parser.add_argument('--min-pontos-segmento',      type=int,   default=None)
-    return parser
