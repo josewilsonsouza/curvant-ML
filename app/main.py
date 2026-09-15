@@ -135,11 +135,32 @@ def enriquecer_com_bearings(df: pd.DataFrame) -> pd.DataFrame:
         for i in range(1, len(bearings))
     ]
     df["var_vel_acum"] = df["vehicle_speed"].diff().abs().cumsum().fillna(0)
+
+    # Desaceleração longitudinal positiva (frenagem), da variação da velocidade.
+    # É a mesma grandeza que decide o rótulo de correção tardia.
+    dv = df["vehicle_speed"].diff() / 3.6
+    dt = df["dt"] if "dt" in df.columns else pd.Series(np.nan, index=df.index)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        a_long = np.where(dt.values > 0, dv.values / dt.values, np.nan)
+    a_long = np.where(np.abs(a_long) <= 6.0, a_long, np.nan)
+    df["desacel_long"] = -a_long
     return df
 
 
 def cor_correcao(label: str) -> str:
     return "#d73027" if label == "Corrigiu" else "#2b8a3e"
+
+
+def descricao_rotulos(limiar: float) -> str:
+    """Texto que explica os dois rótulos, usado nos mapas."""
+    return (
+        f"🔴 **Corrigiu**: o motorista freou forte já dentro da curva, "
+        f"desacelerando mais de {limiar} m/s². Chegou rápido demais e teve que "
+        f"ajustar a velocidade no meio do trecho curvo.\n\n"
+        f"🟢 **Antecipou**: nenhuma frenagem forte dentro da curva. A velocidade "
+        f"de entrada já era compatível com o raio, então freou antes (ou nem "
+        f"precisou frear)."
+    )
 
 
 # Dados
@@ -264,177 +285,191 @@ if visao == "Curva selecionada":
     c7.metric("Duração da curva", f"{dur_curva:.0f}s")
 
     _ct = cfg["correcao_tardia"]
-    ativo = bool(feat_row["correcao_tardia_curva"])
-    st.metric(
-        label="Correção tardia",
-        value="🔴 Ativa" if ativo else "⚪ Inativa",
-        help=(f"Desaceleração > {_ct['limiar_desaceleracao']} m/s² já dentro da curva, "
-              f"medida pela variação da velocidade. Indica que o motorista não antecipou "
-              f"a curva e teve que corrigir."),
-    )
 
-    st.divider()
-    st.subheader("Mapa do trecho")
     lead_gap = feat_cfg["extracao"].get("lead_gap", 0)
-    st.caption(
-        f"O trecho azul é a **janela de features** usada para predição. "
-        f"Termina {lead_gap} m antes da entrada da curva (lead_gap). "
-        f"O modelo faz a predição nesse ponto, antes de o veículo entrar na curva."
-    )
-    lat_c = todos["lat"].mean()
-    lon_c = todos["lon"].mean()
-    m = folium.Map(location=[lat_c, lon_c], zoom_start=17, tiles="CartoDB positron")
-
-    traj_completo = df_at[df_at["id_route"] == rota_sel][["lat", "lon"]].dropna()
-    if len(traj_completo) > 1:
-        folium.PolyLine(
-            traj_completo.values.tolist(),
-            color="#aaaaaa", weight=1.5, opacity=0.4,
-            tooltip="Trajeto completo",
-        ).add_to(m)
-
-    if len(pre_pts) > 1:
-        folium.PolyLine(
-            pre_pts[["lat", "lon"]].values.tolist(),
-            color="#2166ac", weight=4, opacity=0.7,
-            tooltip="Pré-curva (janela de features)",
-        ).add_to(m)
-
-    for _, row in pre_pts.iterrows():
-        folium.CircleMarker(
-            location=[row["lat"], row["lon"]],
-            radius=5, color="#2166ac", fill=True,
-            fill_color="#4393c3", fill_opacity=0.8,
-            tooltip=(
-                f"Pré-curva | t={row['time_sec']:.0f}s<br>"
-                f"Vel: {row['vehicle_speed']:.1f} km/h<br>"
-                f"RPM: {row['engine_rpm']:.0f}"
-            ),
-        ).add_to(m)
-
-    if len(curva_pts) > 1:
-        folium.PolyLine(
-            curva_pts[["lat", "lon"]].values.tolist(),
-            color=cor, weight=4, opacity=0.8,
-        ).add_to(m)
-
-    for _, row in curva_pts.iterrows():
-        corrigiu_pt = bool(row.get("correcao_tardia", 0))
-        c_pt = "#d73027" if corrigiu_pt else "#2b8a3e"
-        criterios_pt = ["Correção tardia"] if corrigiu_pt else []
-        tip = (
-            f"<b>{'Corrigiu' if corrigiu_pt else 'Antecipou'}</b><br>"
-            f"t={row['time_sec']:.0f}s | Vel: {row['vehicle_speed']:.1f} km/h<br>"
-            f"Accel.lat: {row['accel_y']:.2f} m/s²<br>"
-            f"DNIT: {row.get('classe_dnit','?')}"
-        )
-        if criterios_pt:
-            tip += f"<br>Critério: {', '.join(criterios_pt)}"
-        folium.CircleMarker(
-            location=[row["lat"], row["lon"]],
-            radius=7, color=c_pt, fill=True,
-            fill_color=c_pt, fill_opacity=0.9,
-            tooltip=folium.Tooltip(tip),
-        ).add_to(m)
-
-    folium.Marker(
-        location=[curva_pts.iloc[0]["lat"], curva_pts.iloc[0]["lon"]],
-        icon=folium.Icon(color="red" if correcao_label == "Corrigiu" else "green",
-                         icon="flag", prefix="fa"),
-        tooltip="Início da curva",
-    ).add_to(m)
-
-    legend_html = """
-    <div style="position:fixed;bottom:12px;left:12px;z-index:9999;
-                background:white;padding:8px 12px;border-radius:8px;
-                font-size:12px;border:1px solid #ccc;line-height:1.6">
-      <b>Legenda</b><br>
-      <span style="color:#2166ac">&#9644;</span> Pré-curva (features)<br>
-      <span style="color:#d73027">●</span> Corrigiu &nbsp;
-      <span style="color:#2b8a3e">●</span> Antecipou
-    </div>"""
-    m.get_root().html.add_child(folium.Element(legend_html))
-    st_folium(m, width="100%", height=500, returned_objects=[])
-
-    st.subheader("Sensores ao longo do tempo")
-    if todos.empty:
-        st.warning("Sem dados de sensor para esta curva.")
-    else:
-        COLOR_SCALE = alt.Scale(domain=["Pré-curva", "Curva"], range=["#2166ac", cor])
-        COLOR_ENC = alt.Color("segmento:N", scale=COLOR_SCALE,
-                              legend=alt.Legend(title="Segmento", orient="top"))
-        rule_df = pd.DataFrame({"t": [0], "label": ["início da curva"]})
-        rule = (
-            alt.Chart(rule_df)
-            .mark_rule(color="black", strokeDash=[5, 4], strokeWidth=1.5)
-            .encode(x=alt.X("t:Q"))
-        )
-        rule_lbl = (
-            alt.Chart(rule_df)
-            .mark_text(align="left", dx=4, dy=-5, fontSize=10, color="black")
-            .encode(x="t:Q", text="label:N", y=alt.value(5))
-        )
-
-        def linha(campo, titulo, unidade="", height=160):
-            base = alt.Chart(todos).mark_line(
-                point=alt.OverlayMarkDef(size=30), strokeWidth=2,
-            ).encode(
-                x=alt.X("t_rel:Q", axis=alt.Axis(
-                    title="Tempo relativo ao início da curva (s)", labelFontSize=10)),
-                y=alt.Y(f"{campo}:Q", scale=alt.Scale(zero=False),
-                        axis=alt.Axis(
-                            title=f"{titulo} ({unidade})" if unidade else titulo,
-                            labelFontSize=10)),
-                color=COLOR_ENC,
-                tooltip=["t_rel:Q", f"{campo}:Q", "segmento:N",
-                         "vehicle_speed:Q", "correcao_tardia:N"],
-            )
-            return (base + rule + rule_lbl).properties(height=height, title=titulo)
-
-        ch_speed = linha("vehicle_speed", "Velocidade", "km/h")
-        ch_accy = linha("accel_y", "Accel. lateral", "m/s²")
-        ch_ctp = linha("ctp_accel", "Accel. centrípeta v²/R", "m/s²").properties(height=160)
-        ch_bear = linha("delta_bearing", "Variação de bearing |Δθ|", "°").properties(height=160)
-
-        g_esq, g_dir = st.columns(2, gap="medium")
-        with g_esq:
-            st.altair_chart(ch_speed, width="stretch")
-            st.altair_chart(ch_ctp, width="stretch")
-        with g_dir:
-            st.altair_chart(ch_accy, width="stretch")
-            st.altair_chart(ch_bear, width="stretch")
 
     st.divider()
-    st.subheader("Distribuição de classes neste trajeto")
-    rota_feat = features_df[features_df["id_route"] == rota_sel].copy()
-    rota_feat["Classe"] = rota_feat["correcao_tardia_curva"].map({0: "Antecipou", 1: "Corrigiu"})
-    dist_df = rota_feat["Classe"].value_counts().reset_index()
-    dist_df.columns = ["Classe", "Contagem"]
-    st.altair_chart(
-        alt.Chart(dist_df)
-        .mark_bar(cornerRadiusTopLeft=4, cornerRadiusTopRight=4)
-        .encode(
-            x=alt.X("Classe:N", axis=alt.Axis(labelAngle=0)),
-            y=alt.Y("Contagem:Q"),
-            color=alt.Color("Classe:N",
-                scale=alt.Scale(domain=["Antecipou", "Corrigiu"],
-                                range=["#2b8a3e", "#d73027"]), legend=None),
-            tooltip=["Classe:N", "Contagem:Q"],
-        ).properties(title=f"Curvas em {rota_sel}", height=180),
-        width="stretch",
-    )
+    aba_mapa, aba_sensores, aba_dados = st.tabs(
+        ["🗺️ Mapa do trecho", "📈 Sensores ao longo do tempo", "📋 Dados da curva"])
 
-    with st.expander("Dados brutos da curva selecionada"):
-        cols_show = [
-            "time_sec", "vehicle_speed", "engine_rpm",
-            "accel_x", "accel_y", "ctp_accel", "correcao_tardia",
-            "raio_curvatura", "classe_dnit", "bearing", "delta_bearing",
+    with aba_mapa:
+        st.subheader("Mapa do trecho")
+        st.caption(
+            f"O trecho azul é a **janela de features** usada para predição. "
+            f"Termina {lead_gap} m antes da entrada da curva (lead_gap). "
+            f"O modelo faz a predição nesse ponto, antes de o veículo entrar na curva."
+        )
+        st.warning(descricao_rotulos(_ct["limiar_desaceleracao"]))
+        lat_c = todos["lat"].mean()
+        lon_c = todos["lon"].mean()
+        m = folium.Map(location=[lat_c, lon_c], zoom_start=17, tiles="OpenStreetMap")
+
+        traj_completo = df_at[df_at["id_route"] == rota_sel][["lat", "lon"]].dropna()
+        if len(traj_completo) > 1:
+            folium.PolyLine(
+                traj_completo.values.tolist(),
+                color="#aaaaaa", weight=1.5, opacity=0.4,
+                tooltip="Trajeto completo",
+            ).add_to(m)
+
+        if len(pre_pts) > 1:
+            folium.PolyLine(
+                pre_pts[["lat", "lon"]].values.tolist(),
+                color="#2166ac", weight=4, opacity=0.7,
+                tooltip="Pré-curva (janela de features)",
+            ).add_to(m)
+
+        for _, row in pre_pts.iterrows():
+            folium.CircleMarker(
+                location=[row["lat"], row["lon"]],
+                radius=5, color="#2166ac", fill=True,
+                fill_color="#4393c3", fill_opacity=0.8,
+                tooltip=(
+                    f"Pré-curva | t={row['time_sec']:.0f}s<br>"
+                    f"Vel: {row['vehicle_speed']:.1f} km/h<br>"
+                    f"RPM: {row['engine_rpm']:.0f}"
+                ),
+            ).add_to(m)
+
+        if len(curva_pts) > 1:
+            folium.PolyLine(
+                curva_pts[["lat", "lon"]].values.tolist(),
+                color=cor, weight=4, opacity=0.8,
+            ).add_to(m)
+
+        for _, row in curva_pts.iterrows():
+            corrigiu_pt = bool(row.get("correcao_tardia", 0))
+            c_pt = "#d73027" if corrigiu_pt else "#2b8a3e"
+            criterios_pt = ["Correção tardia"] if corrigiu_pt else []
+            tip = (
+                f"<b>{'Corrigiu' if corrigiu_pt else 'Antecipou'}</b><br>"
+                f"t={row['time_sec']:.0f}s | Vel: {row['vehicle_speed']:.1f} km/h<br>"
+                f"Accel.lat: {row['accel_y']:.2f} m/s²<br>"
+                f"DNIT: {row.get('classe_dnit','?')}"
+            )
+            if criterios_pt:
+                tip += f"<br>Critério: {', '.join(criterios_pt)}"
+            folium.CircleMarker(
+                location=[row["lat"], row["lon"]],
+                radius=7, color=c_pt, fill=True,
+                fill_color=c_pt, fill_opacity=0.9,
+                tooltip=folium.Tooltip(tip),
+            ).add_to(m)
+
+        folium.Marker(
+            location=[curva_pts.iloc[0]["lat"], curva_pts.iloc[0]["lon"]],
+            icon=folium.Icon(color="red" if correcao_label == "Corrigiu" else "green",
+                             icon="flag", prefix="fa"),
+            tooltip="Início da curva",
+        ).add_to(m)
+
+        legend_html = """
+        <div style="position:fixed;bottom:12px;left:12px;z-index:9999;
+                    background:white;color:#222;padding:8px 12px;border-radius:8px;
+                    font-size:12px;border:1px solid #ccc;line-height:1.6">
+          <b>Legenda</b><br>
+          <span style="color:#2166ac">&#9644;</span> Pré-curva (features)<br>
+          <span style="color:#d73027">●</span> Corrigiu &nbsp;
+          <span style="color:#2b8a3e">●</span> Antecipou
+        </div>"""
+        m.get_root().html.add_child(folium.Element(legend_html))
+        st_folium(m, width="100%", height=500, returned_objects=[])
+
+
+    with aba_sensores:
+        st.subheader("Sensores ao longo do tempo")
+        if todos.empty:
+            st.warning("Sem dados de sensor para esta curva.")
+        else:
+            COLOR_SCALE = alt.Scale(domain=["Pré-curva", "Curva"], range=["#2166ac", cor])
+            COLOR_ENC = alt.Color("segmento:N", scale=COLOR_SCALE,
+                                  legend=alt.Legend(title="Segmento", orient="top"))
+            rule_df = pd.DataFrame({"t": [0], "label": ["início da curva"]})
+            rule = (
+                alt.Chart(rule_df)
+                .mark_rule(color="black", strokeDash=[5, 4], strokeWidth=1.5)
+                .encode(x=alt.X("t:Q"))
+            )
+            rule_lbl = (
+                alt.Chart(rule_df)
+                .mark_text(align="left", dx=4, dy=-5, fontSize=10, color="black")
+                .encode(x="t:Q", text="label:N", y=alt.value(5))
+            )
+
+            def linha(campo, titulo, unidade="", height=240):
+                base = alt.Chart(todos).mark_line(
+                    point=alt.OverlayMarkDef(size=45), strokeWidth=2,
+                ).encode(
+                    x=alt.X("t_rel:Q", axis=alt.Axis(
+                        title="Tempo relativo ao início da curva (s)", labelFontSize=11)),
+                    y=alt.Y(f"{campo}:Q", scale=alt.Scale(zero=False),
+                            axis=alt.Axis(title=unidade or None, labelFontSize=11)),
+                    color=COLOR_ENC,
+                    tooltip=["t_rel:Q", f"{campo}:Q", "segmento:N",
+                             "vehicle_speed:Q", "correcao_tardia:N"],
+                )
+                return (base + rule + rule_lbl).properties(
+                    height=height,
+                    title=alt.TitleParams(titulo, anchor="start", fontSize=14),
+                )
+
+            limiar = _ct["limiar_desaceleracao"]
+            limiar_rule = (
+                alt.Chart(pd.DataFrame({"y": [limiar]}))
+                .mark_rule(color="#d73027", strokeDash=[4, 4], strokeWidth=1.5)
+                .encode(y=alt.Y("y:Q"))
+            )
+
+            ch_speed = linha("vehicle_speed", "Velocidade", "km/h")
+            ch_desacel = (
+                linha("desacel_long", "Desaceleração longitudinal", "m/s²") + limiar_rule
+            ).properties(
+                height=240,
+                title=alt.TitleParams(
+                    f"Desaceleração longitudinal (limiar {limiar} m/s²)",
+                    anchor="start", fontSize=14),
+            )
+            ch_raio = linha("raio_curvatura", "Raio de curvatura", "m")
+            ch_ctp = linha("ctp_accel", "Accel. centrípeta v²/R", "m/s²")
+
+            st.caption(
+                "A linha preta tracejada marca a entrada da curva: azul é a janela "
+                "de features, vermelho é o trecho dentro da curva. O intervalo sem "
+                f"pontos entre as duas é o lead_gap de {lead_gap} m."
+            )
+            for ch in (ch_speed, ch_desacel, ch_raio, ch_ctp):
+                st.altair_chart(ch, width="stretch")
+
+
+    with aba_dados:
+        st.subheader("Distribuição de classes neste trajeto")
+        rota_feat = features_df[features_df["id_route"] == rota_sel].copy()
+        rota_feat["Classe"] = rota_feat["correcao_tardia_curva"].map(
+            {0: "🟢 Antecipou", 1: "🔴 Corrigiu"})
+        n_rota = len(rota_feat)
+        contagem = rota_feat["Classe"].value_counts()
+        dist_df = pd.DataFrame({
+            "Classe": ["🟢 Antecipou", "🔴 Corrigiu"],
+            "Curvas": [int(contagem.get("🟢 Antecipou", 0)),
+                       int(contagem.get("🔴 Corrigiu", 0))],
+        })
+        dist_df["Percentual"] = [
+            f"{100 * c / n_rota:.0f}%" if n_rota else "-" for c in dist_df["Curvas"]
         ]
-        cols_ok = [c for c in cols_show if c in curva_pts.columns]
-        st.dataframe(curva_pts[cols_ok].round(3), width="stretch")
+        st.caption(f"{n_rota} curvas em `{rota_sel}`")
+        st.dataframe(dist_df, width="content", hide_index=True)
 
-    with st.expander("Features extraídas desta curva"):
-        st.dataframe(feat_row.to_frame().T.round(3), width="stretch")
+        with st.expander("Dados brutos da curva selecionada"):
+            cols_show = [
+                "time_sec", "vehicle_speed", "engine_rpm",
+                "accel_x", "accel_y", "ctp_accel", "correcao_tardia",
+                "raio_curvatura", "classe_dnit", "delta_bearing",
+            ]
+            cols_ok = [c for c in cols_show if c in curva_pts.columns]
+            st.dataframe(curva_pts[cols_ok].round(3), width="stretch")
+
+        with st.expander("Features extraídas desta curva"):
+            st.dataframe(feat_row.to_frame().T.round(3), width="stretch")
 
 # Tab 2: Visão geral do local
 
@@ -454,6 +489,7 @@ else:  # Visão geral do local
 
     st.subheader("Mapa de todas as curvas do local")
     st.warning("🚔Cada círculo representa uma curva completa (ponto de entrada). Selecione uma curva na opção **Curva selecionada** para ver todos os pontos do trecho.")
+    st.warning(descricao_rotulos(cfg["correcao_tardia"]["limiar_desaceleracao"]))
 
     entry_rows = []
     for _, fr in local_feat.iterrows():
@@ -477,7 +513,7 @@ else:  # Visão geral do local
         lons = [r["lon"] for r in entry_rows]
         m2 = folium.Map(
             location=[np.mean(lats), np.mean(lons)],
-            zoom_start=13, tiles="CartoDB positron",
+            zoom_start=13, tiles="OpenStreetMap",
         )
 
         for route_id in local_feat["id_route"].unique():
@@ -507,7 +543,7 @@ else:  # Visão geral do local
         m2.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
         legend2 = """
         <div style="position:fixed;bottom:12px;left:12px;z-index:9999;
-                    background:white;padding:8px 12px;border-radius:8px;
+                    background:white;color:#222;padding:8px 12px;border-radius:8px;
                     font-size:12px;border:1px solid #ccc;line-height:1.6">
           <b>Legenda</b><br>
           <span style="color:#d73027">●</span> Corrigiu &nbsp;

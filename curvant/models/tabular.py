@@ -30,7 +30,6 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn import svm
 from xgboost import XGBClassifier, XGBRegressor
 
-from curvant.constants import G as _G, MU as _MU
 from curvant.driving.features import colunas_features, checar_leakage
 
 # Utilitários internos
@@ -84,66 +83,13 @@ def _split_por_rota(
         df_test_filled[col]  = df_test_filled[col].fillna(_medians[col])
     X_train = df_train_filled.fillna(0.0).values
     y_train = df_train[target].values
-    # GroupKFold groups on the original recording ID (strips _p<N>) so all
-    # sub-trajectories from the same file stay in the same fold
+    # O agrupamento usa o ID da gravação original (sem o sufixo _p<N>), para que
+    # todos os sub-trajetos de um mesmo arquivo caiam na mesma dobra
     groups_train = np.array([_base_route(r) for r in df_train['id_route'].astype(str)])
     X_test  = df_test_filled.fillna(0.0).values
     y_test  = df_test[target].values
 
     return X_train, X_test, y_train, y_test, groups_train
-
-
-def _split_rota_generico(
-    df: pd.DataFrame,
-    feature_cols: list[str],
-    target: str,
-    test_size: float = 0.3,
-    random_state: int = 42,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Split por base-route com feature_cols explícito (não deriva de NAO_FEATURES).
-
-    Usado por ISL e regressão, cujos alvos (ex.: _isl_y, curve_*) exigem
-    controle fino sobre quais colunas são features. Garante que nenhuma rota
-    apareça em treino e teste simultaneamente.
-
-    NaN em colunas de raio são preenchidos pela mediana de treino; demais NaN -> 0.
-    Retorna (X_train, X_test, y_train, y_test, groups_train).
-    """
-    checar_leakage(feature_cols, target)
-    id_routes  = df['id_route'].astype(str)
-    base_rotas = sorted({_base_route(r) for r in id_routes})
-    train_base, test_base = train_test_split(
-        base_rotas, test_size=test_size, random_state=random_state
-    )
-    base_map   = id_routes.map(_base_route)
-    df_train   = df[base_map.isin(set(train_base))].dropna(subset=[target])
-    df_test    = df[base_map.isin(set(test_base))].dropna(subset=[target])
-
-    raio_cols = [c for c in feature_cols if 'raio' in c]
-    medians   = df_train[raio_cols].median() if raio_cols else None
-
-    def _prep(d: pd.DataFrame) -> np.ndarray:
-        d = d[feature_cols].copy()
-        for col in raio_cols:
-            d[col] = d[col].fillna(medians[col])
-        return d.fillna(0.0).values
-
-    X_train = _prep(df_train)
-    X_test  = _prep(df_test)
-    y_train = df_train[target].values
-    y_test  = df_test[target].values
-    groups_train = np.array([_base_route(r) for r in df_train['id_route'].astype(str)])
-
-    return X_train, X_test, y_train, y_test, groups_train
-
-
-def _preparar_xy(df: pd.DataFrame, target: str = 'correcao_tardia_curva') -> tuple[np.ndarray, np.ndarray]:
-    """Extrai features e target como arrays numpy brutos (sem pré-processamento)."""
-    feature_cols = colunas_features(df)
-    checar_leakage(feature_cols, target)
-    df_clean = df[feature_cols + [target]].dropna()
-    return df_clean[feature_cols].values, df_clean[target].values
 
 
 def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca_n_components=None,
@@ -165,38 +111,98 @@ def _construir_pipeline(clf, random_state: int = 42, use_smote: bool = True, pca
     return ImbPipeline(steps)
 
 
-def _preproc_train_test(
-    X_train: np.ndarray,
-    X_test: np.ndarray,
-    y_train: np.ndarray,
-    use_smote: bool = True,
-    random_state: int = 42,
-    pca_n_components=None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Aplica SMOTE (opcional) -> StandardScaler -> PCA (opcional) corretamente:
-      - SMOTE apenas em X_train / y_train
-      - Scaler e PCA: fit em X_train, transform em X_test (sem vazar estatísticas do teste)
-
-    Retorna (X_train_pp, X_test_pp, y_train_pp).
-    """
-    if use_smote:
-        X_train, y_train = SMOTE(random_state=random_state).fit_resample(X_train, y_train)
-
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_test  = scaler.transform(X_test)
-
-    if pca_n_components is not None:
-        pca = PCA(n_components=pca_n_components, random_state=random_state)
-        X_train = pca.fit_transform(X_train)
-        X_test  = pca.transform(X_test)
-        print(f'  PCA: {pca.n_components_} componentes, variância explicada: {pca.explained_variance_ratio_.sum():.1%}')
-
-    return X_train, X_test, y_train
-
-
 # Modelos clássicos
+
+def _smote_k(y_train, cv_folds: int) -> int:
+    """Vizinhos do SMOTE, limitado pela classe menos frequente dentro de uma dobra.
+
+    Conta pela classe de menor frequência em vez de somar rótulos, o que faz a conta
+    valer também para alvos multiclasse.
+    """
+    _, contagens = np.unique(y_train, return_counts=True)
+    minoria_na_dobra = max(1, int(contagens.min()) * (cv_folds - 1) // cv_folds)
+    return min(5, minoria_na_dobra - 1)
+
+
+def _avaliar_classificadores(
+    modelos: dict,
+    X_train, X_test, y_train, y_test, groups_train,
+    cv,
+    smote_k: int,
+    f1_average: str,
+    random_state: int,
+    pca_n_components,
+    plot_cm: bool,
+    outdir: str,
+    labels: list[str] | None,
+    sufixo_cm: str = '',
+) -> pd.DataFrame:
+    """Valida por dobras e avalia no teste cada modelo do dicionário.
+
+    O SMOTE entra como passo do pipeline, então é refeito dentro de cada dobra de
+    treino e nunca alcança a dobra de validação nem o teste.
+    """
+    f1_scorer = 'f1' if f1_average == 'binary' else f'f1_{f1_average}'
+    nomes_cm  = labels or ['Negativo', 'Positivo']
+    linhas = []
+
+    for nome, clf in modelos.items():
+        pipe = _construir_pipeline(
+            clf, random_state=random_state, use_smote=True,
+            pca_n_components=pca_n_components, smote_k=smote_k,
+        )
+        cv_res = cross_validate(
+            pipe, X_train, y_train, cv=cv, groups=groups_train,
+            scoring={'acc': 'accuracy', 'f1': f1_scorer},
+        )
+        cv_acc = cv_res['test_acc'].mean()
+        cv_f1  = cv_res['test_f1'].mean()
+
+        pipe.fit(X_train, y_train)
+        y_pred = pipe.predict(X_test)
+
+        acc  = accuracy_score(y_test, y_pred)
+        f1   = f1_score(y_test, y_pred, average=f1_average)
+        prec = precision_score(y_test, y_pred, average=f1_average, zero_division=0)
+        rec  = recall_score(y_test, y_pred, average=f1_average)
+
+        print(
+            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
+            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
+        )
+
+        if plot_cm:
+            plt.figure(figsize=(6, 4))
+            sns.heatmap(confusion_matrix(y_test, y_pred), annot=True, fmt='d', cmap='Blues',
+                        xticklabels=nomes_cm, yticklabels=nomes_cm)
+            plt.title(nome)
+            plt.ylabel('Real')
+            plt.xlabel('Prevista')
+            os.makedirs(outdir, exist_ok=True)
+            plt.savefig(os.path.join(outdir, f'cm_{nome}{sufixo_cm}.pdf'), bbox_inches='tight')
+            plt.close()
+
+        linhas.append({
+            'Classificador':    nome,
+            'CV Acc (média)':   cv_acc,
+            'CV F1 (média)':    cv_f1,
+            'Acc (teste)':      acc,
+            'F1 (teste)':       f1,
+            'Precisão (teste)': prec,
+            'Recall (teste)':   rec,
+        })
+
+    return pd.DataFrame(linhas)
+
+
+def _salvar_tabela(df_res: pd.DataFrame, outdir: str, arquivo: str, caption: str, label: str) -> None:
+    os.makedirs(outdir, exist_ok=True)
+    df_res.to_latex(
+        os.path.join(outdir, arquivo),
+        float_format='%.3f', index=False,
+        caption=caption, label=label, position='h', column_format='lcccccc',
+    )
+
 
 def aplicar_modelos_ml(
     df: pd.DataFrame,
@@ -210,31 +216,19 @@ def aplicar_modelos_ml(
     outdir: str = 'results',
     labels: list[str] | None = None,
 ) -> pd.DataFrame:
-    """
-    Treina e avalia modelos clássicos de ML. Serve alvos binários (risco) e multiclasse
-    (isl_class), controlados por f1_average ('binary'/'weighted' vs 'macro') e labels.
+    """Treina e avalia os modelos clássicos com hiperparâmetros fixos.
 
-    Metodologia correta:
-      1. Split estratificado nos dados BRUTOS (antes de SMOTE / scaler / PCA)
-      2. StratifiedKFold sobre X_train bruto
-      3. Dentro de cada fold: SMOTE -> Scaler (-> PCA) -> fit  (via ImbPipeline)
-        , amostras sintéticas nunca cruzam para o fold de validação
-      4. Avaliação no teste com Acurácia, F1, Precisão, Recall
+    Serve alvo binário e multiclasse, controlado por f1_average e labels. O corte
+    treino/teste é por rota e a validação cruzada agrupa pela rota também, então
+    nenhuma gravação aparece dos dois lados.
 
-    pca_n_components : None | int (nº de componentes) | float 0–1 (variância explicada)
-    labels           : nomes das classes para a matriz de confusão (default: Negativo/Positivo)
+    pca_n_components aceita None, um número de componentes, ou uma fração de
+    variância explicada entre 0 e 1.
     """
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
     )
     cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
-
-    # k_neighbors do SMOTE: limitado pela classe MENOS frequente (vale para binário e
-    # multiclasse; a contagem por soma só funcionaria com rótulos 0/1).
-    _, _counts = np.unique(y_train, return_counts=True)
-    n_minority_train = int(_counts.min())
-    n_minority_per_fold = max(1, n_minority_train * (cv_folds - 1) // cv_folds)
-    smote_k = min(5, n_minority_per_fold - 1)
 
     modelos = {
         'Regressão Logística': LogisticRegression(random_state=random_state, max_iter=1000),
@@ -251,66 +245,16 @@ def aplicar_modelos_ml(
         ),
     }
 
-    linhas = []
-    for nome, clf in modelos.items():
-        pipe = _construir_pipeline(clf, random_state=random_state, pca_n_components=pca_n_components,
-                                   use_smote=True, smote_k=smote_k)
-
-        f1_scorer = 'f1' if f1_average == 'binary' else f'f1_{f1_average}'
-        cv_res = cross_validate(
-            pipe, X_train, y_train, cv=cv, groups=groups_train,
-            scoring={'acc': 'accuracy', 'f1': f1_scorer},
-        )
-        cv_acc = cv_res['test_acc'].mean()
-        cv_f1  = cv_res['test_f1'].mean()
-
-        # Avaliação final no conjunto de teste (nunca visto pelo pipeline)
-        pipe.fit(X_train, y_train)
-        y_pred = pipe.predict(X_test)
-
-        acc  = accuracy_score(y_test, y_pred)
-        f1   = f1_score(y_test, y_pred, average=f1_average)
-        prec = precision_score(y_test, y_pred, average=f1_average, zero_division=0)
-        rec  = recall_score(y_test, y_pred, average=f1_average)
-
-        print(
-            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
-            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
-        )
-
-        if plot_cm:
-            cm = confusion_matrix(y_test, y_pred)
-            plt.figure(figsize=(6, 4))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                        xticklabels=(labels or ['Negativo', 'Positivo']),
-                        yticklabels=(labels or ['Negativo', 'Positivo']))
-            plt.title(nome)
-            plt.ylabel('Real')
-            plt.xlabel('Prevista')
-            os.makedirs(outdir, exist_ok=True)
-            plt.savefig(os.path.join(outdir, f'cm_{nome}.pdf'), bbox_inches='tight')
-            plt.close()
-
-        linhas.append({
-            'Classificador':    nome,
-            'CV Acc (média)':   cv_acc,
-            'CV F1 (média)':    cv_f1,
-            'Acc (teste)':      acc,
-            'F1 (teste)':       f1,
-            'Precisão (teste)': prec,
-            'Recall (teste)':   rec,
-        })
-
-    df_res = pd.DataFrame(linhas)
-    os.makedirs(outdir, exist_ok=True)
-    df_res.to_latex(
-        os.path.join(outdir, 'resultados.tex'),
-        float_format='%.3f',
-        index=False,
-        caption='Resultados dos modelos clássicos de ML, validação cruzada por rota (GroupKFold) e conjunto de teste.',
-        label='tab:ml_resultados',
-        position='h',
-        column_format='lcccccc',
+    df_res = _avaliar_classificadores(
+        modelos, X_train, X_test, y_train, y_test, groups_train, cv,
+        smote_k=_smote_k(y_train, cv_folds), f1_average=f1_average,
+        random_state=random_state, pca_n_components=pca_n_components,
+        plot_cm=plot_cm, outdir=outdir, labels=labels,
+    )
+    _salvar_tabela(
+        df_res, outdir, 'resultados.tex',
+        'Resultados dos modelos clássicos, validação cruzada agrupada por rota e conjunto de teste.',
+        'tab:ml_resultados',
     )
     return df_res
 
@@ -446,28 +390,28 @@ def aplicar_modelos_ml_otimizados(
     target: str = 'correcao_tardia_curva',
     f1_average: str = 'weighted',
     outdir: str = 'results',
+    labels: list[str] | None = None,
 ) -> pd.DataFrame:
-    """
-    Igual a aplicar_modelos_ml mas com Optuna para XGBoost e RandomForest.
-    Usa split por id_route e StratifiedGroupKFold.
+    """Mesma avaliação de aplicar_modelos_ml, mas com Optuna ajustando XGBoost,
+    RandomForest e regressão logística antes. Os demais modelos ficam no padrão.
     """
     X_train, X_test, y_train, y_test, groups_train = _split_por_rota(
         df, target=target, test_size=test_size, random_state=random_state,
     )
     cv = StratifiedGroupKFold(n_splits=cv_folds, shuffle=True, random_state=random_state)
 
-    timeout_str = f", timeout={timeout}s" if timeout else ""
-    print(f"  Tuning XGBoost com Optuna ({n_trials_xgb} trials{timeout_str})...")
+    sufixo = f", timeout={timeout}s" if timeout else ""
+    print(f"  Tuning XGBoost com Optuna ({n_trials_xgb} trials{sufixo})...")
     best_xgb = _optuna_xgb(X_train, y_train, groups_train, cv_folds=cv_folds,
-                            n_trials=n_trials_xgb, timeout=timeout, random_state=random_state)
+                           n_trials=n_trials_xgb, timeout=timeout, random_state=random_state)
     print(f"  Melhores params XGB: {best_xgb}")
 
-    print(f"  Tuning RandomForest com Optuna ({n_trials_rf} trials{timeout_str})...")
+    print(f"  Tuning RandomForest com Optuna ({n_trials_rf} trials{sufixo})...")
     best_rf = _optuna_rf(X_train, y_train, groups_train, cv_folds=cv_folds,
                          n_trials=n_trials_rf, timeout=timeout, random_state=random_state)
     print(f"  Melhores params RF: {best_rf}")
 
-    print(f"  Tuning LogisticRegression com Optuna ({n_trials_lr} trials{timeout_str})...")
+    print(f"  Tuning LogisticRegression com Optuna ({n_trials_lr} trials{sufixo})...")
     best_lr = _optuna_lr(X_train, y_train, groups_train, cv_folds=cv_folds,
                          n_trials=n_trials_lr, timeout=timeout, random_state=random_state)
     print(f"  Melhores params LR: {best_lr}")
@@ -484,62 +428,16 @@ def aplicar_modelos_ml_otimizados(
         ),
     }
 
-    n_minority_train = int(y_train.sum()) if y_train.mean() <= 0.5 else int((1 - y_train).sum())
-    n_minority_per_fold = max(1, n_minority_train * (cv_folds - 1) // cv_folds)
-    smote_k = min(5, n_minority_per_fold - 1)
-
-    linhas = []
-    for nome, clf in modelos.items():
-        pipe   = _construir_pipeline(clf, random_state=random_state, use_smote=True, smote_k=smote_k)
-        f1_scorer = 'f1' if f1_average == 'binary' else f'f1_{f1_average}'
-        cv_res = cross_validate(
-            pipe, X_train, y_train, cv=cv, groups=groups_train,
-            scoring={'acc': 'accuracy', 'f1': f1_scorer},
-        )
-        cv_acc = cv_res['test_acc'].mean()
-        cv_f1  = cv_res['test_f1'].mean()
-
-        pipe.fit(X_train, y_train)
-        y_pred = pipe.predict(X_test)
-
-        acc  = accuracy_score(y_test, y_pred)
-        f1   = f1_score(y_test, y_pred, average=f1_average)
-        prec = precision_score(y_test, y_pred, average=f1_average, zero_division=0)
-        rec  = recall_score(y_test, y_pred, average=f1_average)
-
-        print(
-            f'{nome:30s}  CV Acc: {cv_acc:.3f}  CV F1: {cv_f1:.3f}  |  '
-            f'Teste Acc: {acc:.3f}  F1: {f1:.3f}  Prec: {prec:.3f}  Rec: {rec:.3f}'
-        )
-
-        if plot_cm:
-            cm = confusion_matrix(y_test, y_pred)
-            plt.figure(figsize=(6, 4))
-            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
-                        xticklabels=['Negativo', 'Positivo'],
-                        yticklabels=['Negativo', 'Positivo'])
-            plt.title(nome)
-            plt.ylabel('Real')
-            plt.xlabel('Prevista')
-            os.makedirs(outdir, exist_ok=True)
-            plt.savefig(os.path.join(outdir, f'cm_{nome}_otim.pdf'), bbox_inches='tight')
-            plt.close()
-
-        linhas.append({
-            'Classificador': nome, 'CV Acc (média)': cv_acc, 'CV F1 (média)': cv_f1,
-            'Acc (teste)': acc, 'F1 (teste)': f1, 'Precisão (teste)': prec, 'Recall (teste)': rec,
-        })
-
-    df_res = pd.DataFrame(linhas)
-    os.makedirs(outdir, exist_ok=True)
-    df_res.to_latex(
-        os.path.join(outdir, 'resultados_otimizado.tex'),
-        float_format='%.3f',
-        index=False,
-        caption='Resultados dos modelos com tuning Optuna (XGBoost e RandomForest), validação cruzada por rota (GroupKFold) e conjunto de teste.',
-        label='tab:ml_resultados_opt',
-        position='h',
-        column_format='lcccccc',
+    df_res = _avaliar_classificadores(
+        modelos, X_train, X_test, y_train, y_test, groups_train, cv,
+        smote_k=_smote_k(y_train, cv_folds), f1_average=f1_average,
+        random_state=random_state, pca_n_components=None,
+        plot_cm=plot_cm, outdir=outdir, labels=labels, sufixo_cm='_otim',
+    )
+    _salvar_tabela(
+        df_res, outdir, 'resultados_otimizado.tex',
+        'Resultados com tuning Optuna, validação cruzada agrupada por rota e conjunto de teste.',
+        'tab:ml_resultados_opt',
     )
     return df_res
 
