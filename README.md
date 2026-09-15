@@ -33,7 +33,6 @@ O comando tem **dois eixos**: a **representação** da entrada e o **alvo**.
 cvt <repr> <alvo>
 ```
 
-
 - **`tab`**: um vetor de números: médias, máximos, jerk, geometria.
 - **`seq`**: a série temporal bruta da janela pré-curva, reamostrada para um comprimento fixo.
 
@@ -125,7 +124,7 @@ O ISL mede o quanto a curva exige da aderência do pneu, $ISL = v^2/(R\,g\,\mu)$
 - A curva é resumida pelo **p95** do ISL dos seus pontos, não pelo máximo. O p95 pega o instante quase pior.
 
 ## Dados
-Os dados utilizados no projeto foram coletadas em diversos cenários, os datasets brutos estão no repositório HuggingFace: [`jwsouza13/routes_ML_inmetro`](https://huggingface.co/datasets/jwsouza13/routes_ML_inmetro). Os dados foram coletados pela equipe Lainf do Inmetro.
+Os dados foram coletados pela equipe Lainf do Inmetro.
 
 | Conjunto | Veículo | Trecho | Local |
 |---|---|---|---|
