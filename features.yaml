@@ -1,4 +1,4 @@
-# Extração das features da janela de aproximação, mais a whitelist que decide o que cada
+# Extração das features da janela de aproximação, mais a lista que decide o que cada
 # representação enxerga. Criou uma feature nova em curvant/driving/features.py? Ela só entra
 # no modelo depois de listada aqui.
 
@@ -18,7 +18,7 @@ flags:
   #
   # A lista é curta de propósito: um representante de cada grupo de features correlacionadas,
   # escolhido por desempenho nos alvos. O acelerômetro não entra, porque é do celular usado na
-  # coleta e registra vibração em vez da dinâmica do carro (docs/ANALISE_DADOS.md).
+  # coleta e registra vibração em vez da dinâmica do carro.
   tab:
     features:
       # velocidade na aproximação

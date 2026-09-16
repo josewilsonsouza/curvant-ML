@@ -200,7 +200,7 @@ def main() -> None:
 
     print(f"\n[{args.repr} {args.target}] {_DESCRICAO_ALVO[args.target]}...")
     if args.repr == 'tab':
-        # Só o tabular usa a whitelist chapada de features; a sequência define seus canais
+        # Só o tabular usa a lista chapada de features; a sequência define seus canais
         # por sensors/scalares_extras, lidos direto do features.yaml pelo treinador.
         configurar_features_ativas(resolver_features_flag(feat_cfg, 'tab'))
         train_tab.run(args.target, features_df, cfg, plot)

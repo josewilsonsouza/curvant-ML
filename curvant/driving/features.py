@@ -322,7 +322,7 @@ def extrair_features(
     que é o que torna a predição antecipada.
 
     O que sai daqui são todas as colunas possíveis. Quem escolhe as que o modelo vê
-    é a whitelist do features.yaml.
+    é a lista do features.yaml.
     """
     df = data.copy()
     df = df.sort_values(by=['id_route', 'time_sec'])
