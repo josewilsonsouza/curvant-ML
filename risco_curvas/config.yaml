@@ -1,0 +1,131 @@
+caminhos:
+  brutos: dados/brutos
+  original: dados/original
+  corrigida: dados/corrigida
+  resultados: resultados
+
+conjuntos: [janeiro, mg_ba, rj_mg]
+fuso_horario: America/Sao_Paulo
+
+colunas:
+  latitude: obd_latitude_deg
+  longitude: obd_longitude_deg
+  velocidade: obd_velocidade_do_veiculo_km_h
+  rpm: obd_rpm_do_motor_rpm
+
+sensor_logger:
+  sensores:
+    - location
+    - totalacceleration
+    - watchorientation
+    - watchgyroscope
+    - watchaccelerometer
+    - watchbarometer
+  angulares: [bearing, yaw]
+  janela_media_s: 1.0
+
+pareamento:
+  distancia_max_m: 10.0
+  velocidade_min_kmh: 5.0
+  pontos_min: 30
+  lacuna_location_max_s: 3.0
+  duracao_min_s: 60.0
+
+limpeza:
+  limites:
+    obd_velocidade_do_veiculo_km_h: [0, 200]
+    obd_velocidade_do_gps_km_h: [0, 200]
+    obd_rpm_do_motor_rpm: [400, 7000]
+    obd_aceleracao_x_m_s2: [-15, 15]
+    obd_aceleracao_grav_x_m_s2: [-20, 20]
+    obd_aceleracao_grav_y_m_s2: [-20, 20]
+    obd_aceleracao_grav_z_m_s2: [-20, 20]
+    obd_taxa_instantanea_de_co2_g_km: [0, 2000]
+  variacao_max_velocidade_kmh_s: 40.0
+  velocidade_max_gps_ms: 70.0
+  hampel:
+    janela: 7
+    limiar: 5.0
+    sinais: [aceleracao, acceleration, accelerometer, gyroscope, watchorientation_q, velocidade_do_gps, location_speed]
+
+trajetoria:
+  lacuna_max_s: 2.0
+  pontos_min_segmento: 20
+  sigma_curvatura: 2
+  percentil_curva: 30
+  pontos_min_trecho: 3
+  pontos_min_mesmo_sentido: 3
+
+amostras:
+  horizontes_s: [1.0, 1.5, 2.0, 3.0]
+  passo_grade_m: 2.0
+  janela_risco_m: 10.0
+  passo_risco_m: 2.0
+  janela_observacao_m: 20.0
+  quantil_curvas: 0.30
+  erro_horizonte_max_s: 1.0
+  raio_min_m: 5.0
+  lacuna_max_variavel_s: 2.0
+  exigir_todas_variaveis: true
+  aceleracao_lateral_max_ms2: 9.81
+  mu: 0.15
+  g: 9.81
+  inclinacao_transversal: 0.0
+
+variaveis:
+  lista_base: dados/original/variaveis_por_cenario.csv
+  excluir:
+    duplicadas:
+      - gps_speed
+      - engine_rpm
+      - accel_x
+      - vehicle_speed
+      - obd_economia_de_combustivel_instantanea_l_100_km
+    quase_constantes:
+      - obd_taxa_de_rotacao_x_deg_s
+      - obd_taxa_de_rotacao_y_deg_s
+      - obd_taxa_de_rotacao_z_deg_s
+      - obd_relacao_de_equivalencia_comandada_por_combustivel_ar
+    identificam_local:
+      - obd_altitude_m
+      - sw_location_altitude
+      - sw_watchbarometer_pressure
+      - sw_watchbarometer_relativealtitude
+      - obd_entrada_do_nivel_de_combustivel
+      - obd_magnetometro_x_t
+      - obd_magnetometro_y_t
+      - obd_magnetometro_z_t
+      - obd_rolamento_deg
+      - sw_location_bearing
+  estatisticas: [mean, std, min, max]
+
+rotulos:
+  classes: [baixo, medio, alto]
+  kmeans_n_init: 50
+
+validacao:
+  dobras: 5
+  fracao_validacao: 0.2
+  semente: 42
+
+modelos:
+  rf:
+    n_estimators: 11
+  xgb:
+    n_estimators: 125
+    max_depth: 20
+    learning_rate: 0.1
+  lgb:
+    n_estimators: 300
+    num_leaves: 125
+    max_depth: 10
+    learning_rate: 0.01
+  lstm:
+    unidades: 32
+    dropout: 0.10
+    epocas: 50
+    lote: 64
+    paciencia: 8
+    taxa_aprendizado: 0.001
+  baseline_fisico:
+    max_depth: 3
