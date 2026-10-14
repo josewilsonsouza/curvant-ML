@@ -6,6 +6,7 @@ Etapas, na ordem em que dependem umas das outras:
     amostras   gera as amostras de cada horizonte
     avaliar    validação cruzada por viagem de referências e modelos
     relatorio  consolida resultados e compara as bases
+    exportar   grava a base pareada corrigida no formato da base pareada original
     tudo       executa todas as etapas
 """
 
@@ -17,7 +18,7 @@ import time
 
 import pandas as pd
 
-from . import amostras, avaliacao, limpeza, pareamento, relatorio, trajetoria, variaveis
+from . import amostras, avaliacao, exportacao, limpeza, pareamento, relatorio, trajetoria, variaveis
 from .config import BASES, Config, carregar, rotulo_horizonte
 
 log = logging.getLogger("risco")
@@ -35,9 +36,17 @@ def etapa_base(cfg: Config) -> None:
     nomes = variaveis.todas(cfg)
     limpa, contagem = limpeza.limpar(pareada, nomes, cfg)
     contagem.to_csv(pasta / "limpeza.csv", index=False)
+    exportacao.exportar(limpa, cfg)
     curvas = trajetoria.detectar(limpa, nomes, cfg)
     curvas.to_parquet(pasta / "base_curvas.parquet", index=False)
     log.info("base de curvas: %d linhas, %d viagens", len(curvas), curvas["id_viagem"].nunique())
+
+
+def etapa_exportar(cfg: Config) -> None:
+    pareada = pd.read_parquet(cfg.pasta_base("corrigida") / "base_pareada.parquet")
+    limpa, _ = limpeza.limpar(pareada, variaveis.todas(cfg), cfg)
+    tabela = exportacao.exportar(limpa, cfg)
+    log.info("base no formato original: %d linhas, %d viagens", len(tabela), tabela["id_route"].nunique())
 
 
 def etapa_amostras(cfg: Config, bases: list[str], horizontes: list[float]) -> None:
@@ -81,7 +90,7 @@ def etapa_relatorio(cfg: Config, bases: list[str]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="python -m risco", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("etapa", choices=["base", "amostras", "avaliar", "relatorio", "tudo"])
+    parser.add_argument("etapa", choices=["base", "amostras", "avaliar", "relatorio", "exportar", "tudo"])
     parser.add_argument("--base", choices=[*BASES, "ambas"], default="ambas")
     parser.add_argument("--horizontes", type=float, nargs="+")
     parser.add_argument("--modelos", nargs="+", choices=MODELOS, default=MODELOS)
@@ -96,6 +105,8 @@ def main() -> None:
     inicio = time.time()
     if args.etapa in ("base", "tudo"):
         etapa_base(cfg)
+    if args.etapa == "exportar":
+        etapa_exportar(cfg)
     if args.etapa in ("amostras", "tudo"):
         etapa_amostras(cfg, bases, horizontes)
     if args.etapa in ("avaliar", "tudo"):

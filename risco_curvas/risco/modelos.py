@@ -10,7 +10,6 @@ raio da curva à frente.
 from __future__ import annotations
 
 import numpy as np
-from lightgbm import LGBMClassifier
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
